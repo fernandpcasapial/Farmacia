@@ -1798,7 +1798,7 @@ tr:hover {{ background: rgba(255,255,255,0.05); }}
     </div>
   </main>
 
-  <footer>Hecho con ♥ · A&V · v {APP_VERSION}</footer>
+  <footer>Hecho con ♥ · A&V · Copyright ©Relexner v {APP_VERSION}</footer>
 
 <script src="/static/app.js"></script>
 </body>
