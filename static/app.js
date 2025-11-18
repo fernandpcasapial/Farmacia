@@ -20,6 +20,11 @@ const per = document.querySelector("#per");
 const btnSearch = document.querySelector("#btnSearch");
 const tblBody = document.querySelector("#tbl tbody");
 const pharmChips = document.querySelector("#pharmChips");
+const pharmacySelectors = document.querySelector("#pharmacySelectors");
+
+// Available pharmacies (loaded from backend)
+let availablePharmacies = [];
+let selectedPharmaciesForSearch = [];
 
 function setPharmacies(list) {
   pharmChips.innerHTML = "";
@@ -43,6 +48,42 @@ function setPharmacies(list) {
   });
 }
 
+async function loadAvailablePharmacies() {
+  try {
+    const r = await fetch("/api/pharmacies");
+    const j = await r.json();
+    availablePharmacies = j.pharmacies || [];
+    renderPharmacySelectors();
+  } catch (error) {
+    console.error("Error loading pharmacies:", error);
+  }
+}
+
+function renderPharmacySelectors() {
+  if (!pharmacySelectors) return;
+  
+  pharmacySelectors.innerHTML = "";
+  availablePharmacies.forEach(pharmacy => {
+    const checkboxDiv = document.createElement("div");
+    checkboxDiv.className = "pharmacy-checkbox";
+    checkboxDiv.innerHTML = `
+      <input type="checkbox" id="pharm_${pharmacy.name}" value="${pharmacy.name}" checked>
+      <label for="pharm_${pharmacy.name}">${pharmacy.name}</label>
+    `;
+    checkboxDiv.querySelector("input").addEventListener("change", updateSelectedPharmacies);
+    pharmacySelectors.appendChild(checkboxDiv);
+  });
+  updateSelectedPharmacies();
+}
+
+function updateSelectedPharmacies() {
+  if (!pharmacySelectors) return;
+  const checkboxes = pharmacySelectors.querySelectorAll("input[type='checkbox']");
+  selectedPharmaciesForSearch = Array.from(checkboxes)
+    .filter(cb => cb.checked)
+    .map(cb => cb.value);
+}
+
 async function search() {
   const text = q.value.trim();
   if (!text) {
@@ -60,6 +101,13 @@ async function search() {
     url.searchParams.set("q", text);
     url.searchParams.set("scope", scope.value);
     url.searchParams.set("mode", mode.value);
+    // Agregar farmacias seleccionadas solo si está en modo WEB/AMBOS y hay selección
+    // Si no hay selección, el backend buscará en todas las farmacias por defecto
+    if ((mode.value === "web" || mode.value === "both") && selectedPharmaciesForSearch.length > 0) {
+      selectedPharmaciesForSearch.forEach(pharm => {
+        url.searchParams.append("pharmacy", pharm);
+      });
+    }
     const r = await fetch(url);
     const j = await r.json();
     setPharmacies(j.pharmacies || []);
@@ -86,55 +134,60 @@ async function search() {
 function showProgressIndicator() {
   // Create progress indicator if it doesn't exist
   let progressDiv = document.querySelector("#searchProgress");
+  const pharmaciesText = selectedPharmaciesForSearch.length > 0 
+    ? selectedPharmaciesForSearch.join(', ') 
+    : 'todas las farmacias';
+  
   if (!progressDiv) {
     progressDiv = document.createElement("div");
     progressDiv.id = "searchProgress";
-    progressDiv.innerHTML = `
-      <div style="
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        background: rgba(0,0,0,0.9);
-        color: white;
-        padding: 25px 35px;
-        border-radius: 15px;
-        z-index: 10000;
-        text-align: center;
-        font-family: ui-sans-serif, system-ui;
-        box-shadow: 0 10px 40px rgba(0,0,0,0.5);
-        border: 1px solid rgba(29,209,161,0.3);
-      ">
-        <div style="margin-bottom: 20px;">
-          <div style="
-            width: 50px;
-            height: 50px;
-            border: 4px solid #1dd1a1;
-            border-top: 4px solid transparent;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 15px;
-          "></div>
-        </div>
-        <div style="font-size: 18px; font-weight: 600; margin-bottom: 10px; color: #1dd1a1;">
-          🔍 Buscando en farmacias peruanas...
-        </div>
-        <div style="font-size: 14px; color: #ccc; margin-bottom: 15px;">
-          Revisando Mifarma, Inkafarma, Boticas y Salud, Boticas Perú...
-        </div>
-        <div style="font-size: 12px; color: #999;">
-          Esto puede tomar unos segundos
-        </div>
-      </div>
-      <style>
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-      </style>
-    `;
     document.body.appendChild(progressDiv);
   }
+  
+  progressDiv.innerHTML = `
+    <div style="
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(0,0,0,0.9);
+      color: white;
+      padding: 25px 35px;
+      border-radius: 15px;
+      z-index: 10000;
+      text-align: center;
+      font-family: ui-sans-serif, system-ui;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+      border: 1px solid rgba(29,209,161,0.3);
+    ">
+      <div style="margin-bottom: 20px;">
+        <div style="
+          width: 50px;
+          height: 50px;
+          border: 4px solid #1dd1a1;
+          border-top: 4px solid transparent;
+          border-radius: 50%;
+          animation: spin 1s linear infinite;
+          margin: 0 auto 15px;
+        "></div>
+      </div>
+      <div style="font-size: 18px; font-weight: 600; margin-bottom: 10px; color: #1dd1a1;">
+        🔍 Buscando en farmacias peruanas...
+      </div>
+      <div style="font-size: 14px; color: #ccc; margin-bottom: 15px;">
+        Revisando ${pharmaciesText}...
+      </div>
+      <div style="font-size: 12px; color: #999;">
+        Esto puede tomar unos segundos
+      </div>
+    </div>
+    <style>
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+    </style>
+  `;
   progressDiv.style.display = "block";
 }
 
@@ -169,8 +222,15 @@ async function loadPage() {
   const j = await r.json();
 
   tblBody.innerHTML = "";
-  (j.rows || []).forEach(row => {
+  (j.rows || []).forEach((row, pageIndex) => {
     const tr = document.createElement("tr");
+    // Guardar el índice real en state.rows usando los datos de la fila
+    tr.dataset.rowKey = JSON.stringify({
+      codigo: row["CÓDIGO PRODUCTO"] || row["N° DIGEMID"] || "",
+      producto: row["Producto (Marca comercial)"] || "",
+      digemid: row["N° DIGEMID"] || "",
+      origen: row["_ORIGEN"] || ""
+    });
     tr.innerHTML = `
       <td>${(row["Producto (Marca comercial)"] || "").toUpperCase()}</td>
       <td>${(row["Principio Activo"] || "").toUpperCase()}</td>
@@ -246,6 +306,9 @@ btnSearch.onclick = search;
 q.addEventListener("keydown", (e) => { if (e.key === "Enter") search(); });
 per.onchange = () => { state.per = parseInt(per.value,10)||25; state.page=1; loadPage(); };
 
+// Load pharmacies on page load
+loadAvailablePharmacies();
+
 // Admin forms
 const formBase  = document.querySelector("#formBase");
 const formExtra = document.querySelector("#formExtra");
@@ -310,9 +373,66 @@ function getSelectedRowIndex() {
   return Array.from(selectedRow.parentNode.children).indexOf(selectedRow);
 }
 
+function getSelectedRowData() {
+  const selectedRow = document.querySelector("#tbl tbody tr.selected");
+  if (!selectedRow) return null;
+  
+  // Obtener los datos de la fila usando el dataset
+  const rowKey = selectedRow.dataset.rowKey;
+  if (!rowKey) return null;
+  
+  try {
+    const key = JSON.parse(rowKey);
+    const rows = state.rows || [];
+    
+    // Buscar la fila en state.rows usando los identificadores
+    for (const row of rows) {
+      const rowCodigo = (row["CÓDIGO PRODUCTO"] || row["N° DIGEMID"] || "").toString().trim();
+      const rowProducto = (row["Producto (Marca comercial)"] || "").toString().trim().toUpperCase();
+      const rowDigemid = (row["N° DIGEMID"] || "").toString().trim();
+      const rowOrigen = row["_ORIGEN"] || "";
+      
+      const keyCodigo = (key.codigo || "").toString().trim();
+      const keyProducto = (key.producto || "").toString().trim().toUpperCase();
+      const keyDigemid = (key.digemid || "").toString().trim();
+      const keyOrigen = key.origen || "";
+      
+      // Comparar usando múltiples campos para mayor precisión
+      if (rowCodigo && keyCodigo && rowCodigo === keyCodigo) {
+        return row;
+      }
+      if (rowDigemid && keyDigemid && rowDigemid === keyDigemid) {
+        return row;
+      }
+      if (rowProducto && keyProducto && rowProducto === keyProducto && rowOrigen === keyOrigen) {
+        return row;
+      }
+    }
+    
+    // Si no se encuentra, intentar usar el índice de la página (fallback)
+    const pageIndex = getSelectedRowIndex();
+    if (pageIndex >= 0) {
+      // Calcular el índice real considerando la paginación
+      const startIndex = (state.page - 1) * state.per;
+      const realIndex = startIndex + pageIndex;
+      if (realIndex < rows.length) {
+        return rows[realIndex];
+      }
+    }
+    
+    return null;
+  } catch (e) {
+    console.error("Error parsing row key:", e);
+    return null;
+  }
+}
+
 function showEditDialog(data = null) {
   const isEdit = data !== null;
   const title = isEdit ? "Editar Registro" : "Agregar Registro";
+  
+  // Guardar los datos originales para identificar la fila en el backend
+  const originalData = data ? {...data} : null;
   
   const dialog = document.createElement("div");
   dialog.className = "modal-overlay";
@@ -322,40 +442,40 @@ function showEditDialog(data = null) {
       <form id="editForm">
         <div class="form-grid">
           <label>CÓDIGO PRODUCTO:</label>
-          <input type="text" name="CÓDIGO PRODUCTO" value="${data ? data["CÓDIGO PRODUCTO"] || "" : ""}">
+          <input type="text" name="CÓDIGO PRODUCTO" value="${data ? (data["CÓDIGO PRODUCTO"] || "") : ""}">
           
           <label>Producto (Marca comercial):</label>
-          <input type="text" name="Producto (Marca comercial)" value="${data ? data["Producto (Marca comercial)"] || "" : ""}">
+          <input type="text" name="Producto (Marca comercial)" value="${data ? (data["Producto (Marca comercial)"] || "") : ""}">
           
           <label>Principio Activo:</label>
-          <input type="text" name="Principio Activo" value="${data ? data["Principio Activo"] || "" : ""}">
+          <input type="text" name="Principio Activo" value="${data ? (data["Principio Activo"] || "") : ""}">
           
           <label>N° DIGEMID:</label>
-          <input type="text" name="N° DIGEMID" value="${data ? data["N° DIGEMID"] || "" : ""}">
+          <input type="text" name="N° DIGEMID" value="${data ? (data["N° DIGEMID"] || "") : ""}">
           
           <label>Laboratorio / Fabricante:</label>
-          <input type="text" name="Laboratorio / Fabricante" value="${data ? data["Laboratorio / Fabricante"] || "" : ""}">
+          <input type="text" name="Laboratorio / Fabricante" value="${data ? (data["Laboratorio / Fabricante"] || "") : ""}">
           
           <label>Presentación:</label>
-          <input type="text" name="Presentación" value="${data ? data["Presentación"] || "" : ""}">
+          <input type="text" name="Presentación" value="${data ? (data["Presentación"] || "") : ""}">
           
           <label>Precio:</label>
-          <input type="text" name="Precio" value="${data ? data["Precio"] || "" : ""}">
+          <input type="text" name="Precio" value="${data ? (data["Precio"] || "") : ""}">
           
           <label>Farmacia / Fuente:</label>
-          <input type="text" name="Farmacia / Fuente" value="${data ? data["Farmacia / Fuente"] || "" : ""}">
+          <input type="text" name="Farmacia / Fuente" value="${data ? (data["Farmacia / Fuente"] || "") : ""}">
           
           <label>Enlace:</label>
-          <input type="text" name="Enlace" value="${data ? data["Enlace"] || "" : ""}">
+          <input type="text" name="Enlace" value="${data ? (data["Enlace"] || "") : ""}">
           
           <label>GRUPO:</label>
-          <input type="text" name="GRUPO" value="${data ? data["GRUPO"] || "" : ""}">
+          <input type="text" name="GRUPO" value="${data ? (data["GRUPO"] || "") : ""}">
           
           <label>Laboratorio Abreviado:</label>
-          <input type="text" name="Laboratorio Abreviado" value="${data ? data["Laboratorio Abreviado"] || "" : ""}">
+          <input type="text" name="Laboratorio Abreviado" value="${data ? (data["Laboratorio Abreviado"] || "") : ""}">
           
           <label>LABORATORIO PRECIO:</label>
-          <input type="text" name="LABORATORIO PRECIO" value="${data ? data["LABORATORIO PRECIO"] || "" : ""}">
+          <input type="text" name="LABORATORIO PRECIO" value="${data ? (data["LABORATORIO PRECIO"] || "") : ""}">
         </div>
         <div class="modal-buttons">
           <button type="submit">${isEdit ? "Actualizar" : "Agregar"}</button>
@@ -371,11 +491,24 @@ function showEditDialog(data = null) {
   form.onsubmit = async (e) => {
     e.preventDefault();
     const formData = new FormData(form);
-    const data = Object.fromEntries(formData.entries());
+    const formDataObj = Object.fromEntries(formData.entries());
     
     try {
       const url = isEdit ? "/api/admin/edit_row" : "/api/admin/add_row";
-      const payload = isEdit ? {...data, index: getSelectedRowIndex()} : data;
+      let payload;
+      
+      if (isEdit && originalData) {
+        // Para editar, usar los datos originales para identificar la fila
+        payload = {
+          ...formDataObj,
+          // Enviar identificadores originales para encontrar la fila en el Excel
+          original_codigo: (originalData["CÓDIGO PRODUCTO"] || originalData["N° DIGEMID"] || "").toString().trim(),
+          original_producto: (originalData["Producto (Marca comercial)"] || "").toString().trim(),
+          original_digemid: (originalData["N° DIGEMID"] || "").toString().trim()
+        };
+      } else {
+        payload = formDataObj;
+      }
       
       const r = await fetch(url, {
         method: "POST",
@@ -389,7 +522,7 @@ function showEditDialog(data = null) {
         dialog.remove();
         await search();
       } else {
-        alert("Error: " + (j.error || ""));
+        alert("Error: " + (j.error || "No se pudo completar la operación"));
       }
     } catch (error) {
       alert("Error: " + error.message);
@@ -398,25 +531,31 @@ function showEditDialog(data = null) {
 }
 
 function editSelectedRow() {
-  const index = getSelectedRowIndex();
-  if (index === -1) {
+  const rowData = getSelectedRowData();
+  if (!rowData) {
     alert("Selecciona una fila para editar.");
     return;
   }
   
-  const rows = state.rows || [];
-  if (index >= rows.length) {
-    alert("Fila no válida.");
+  // Solo se pueden editar registros de BASE
+  if (rowData._ORIGEN && rowData._ORIGEN !== "BASE") {
+    alert("Solo se pueden editar registros de la base principal (BASE).");
     return;
   }
   
-  showEditDialog(rows[index]);
+  showEditDialog(rowData);
 }
 
 function deleteSelectedRow() {
-  const index = getSelectedRowIndex();
-  if (index === -1) {
+  const rowData = getSelectedRowData();
+  if (!rowData) {
     alert("Selecciona una fila para eliminar.");
+    return;
+  }
+  
+  // Solo se pueden eliminar registros de BASE
+  if (rowData._ORIGEN && rowData._ORIGEN !== "BASE") {
+    alert("Solo se pueden eliminar registros de la base principal (BASE).");
     return;
   }
   
@@ -424,10 +563,17 @@ function deleteSelectedRow() {
     return;
   }
   
+  // Enviar identificadores para encontrar la fila en el Excel
+  const payload = {
+    codigo: rowData["CÓDIGO PRODUCTO"] || rowData["N° DIGEMID"],
+    producto: rowData["Producto (Marca comercial)"],
+    digemid: rowData["N° DIGEMID"]
+  };
+  
   fetch("/api/admin/delete_row", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({index: index})
+    body: JSON.stringify(payload)
   })
   .then(r => r.json())
   .then(j => {

@@ -354,8 +354,9 @@ def combo_df():
     return pd.concat([a, b], ignore_index=True)
 
 # --------- Scraping ----------
+# User-Agent actualizado para mayor compatibilidad (Chrome 142)
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+      "(KHTML, like Gecko) Chrome/142.0.7444.60 Safari/537.36")
 HDRS = {"User-Agent": UA, "Accept-Language":"es-PE,es;q=0.9,en;q=0.8"}
 
 # Improved price regex patterns for Peruvian pharmacies
@@ -375,30 +376,53 @@ PERUVIAN_PHARMACIES = [
         "base_url": "https://www.mifarma.com.pe",
         "search_url": "https://www.mifarma.com.pe/buscador?keyword={query}",
         "price_selectors": [
+            # Selectores específicos para Angular/React
+            "fp-price", "[class*='fp-price']", "[class*='ng-price']",
+            # Selectores genéricos
             ".price", ".precio", "[class*='price']", "[class*='precio']",
             ".amount", ".cost", ".valor", ".precio-actual",
-            "[class*='amount']", "[class*='cost']", "[class*='valor']"
+            "[class*='amount']", "[class*='cost']", "[class*='valor']",
+            ".price-current", ".current-price", ".price-value"
         ],
         "product_selectors": [
+            # Selectores específicos para Angular/React
+            "fp-product", "fp-item", "fp-card", "[class*='fp-']", "[class*='ng-']",
+            # Selectores genéricos
             ".product-item", ".product", ".item", ".producto",
             "[class*='product']", "[class*='item']", "[class*='resultado']",
-            ".search-result", ".result-item"
-        ]
+            ".search-result", ".result-item", ".product-card",
+            ".product-list-item", ".product-grid-item", ".product-tile",
+            ".product-box", ".product-container", ".product-wrapper",
+            "div[class*='card']", "div[class*='tile']", "div[class*='box']"
+        ],
+        "use_text_extraction": False,  # Intentar primero con selectores, luego texto como fallback
+        "use_selenium": True  # Usar Selenium para renderizar JS
     },
     {
         "name": "Inkafarma", 
         "base_url": "https://inkafarma.pe",
         "search_url": "https://inkafarma.pe/buscador?keyword={query}",
         "price_selectors": [
+            # Selectores específicos para Angular/React
+            "fp-price", "[class*='fp-price']", "[class*='ng-price']",
+            # Selectores genéricos
             ".price", ".precio", "[class*='price']", "[class*='precio']",
             ".amount", ".cost", ".valor", ".precio-actual",
-            "[class*='amount']", "[class*='cost']", "[class*='valor']"
+            "[class*='amount']", "[class*='cost']", "[class*='valor']",
+            ".price-current", ".current-price", ".price-value"
         ],
         "product_selectors": [
+            # Selectores específicos para Angular/React
+            "fp-product", "fp-item", "fp-card", "[class*='fp-']", "[class*='ng-']",
+            # Selectores genéricos
             ".product-item", ".product", ".item", ".producto",
             "[class*='product']", "[class*='item']", "[class*='resultado']",
-            ".search-result", ".result-item"
-        ]
+            ".search-result", ".result-item", ".product-card",
+            ".product-list-item", ".product-grid-item", ".product-tile",
+            ".product-box", ".product-container", ".product-wrapper",
+            "div[class*='card']", "div[class*='tile']", "div[class*='box']"
+        ],
+        "use_selenium": True  # Requiere renderizar JS y luego extracción por texto
     },
     {
         "name": "Boticas y Salud",
@@ -408,24 +432,148 @@ PERUVIAN_PHARMACIES = [
             ".price", ".precio", "[class*='price']", "[class*='precio']",
             ".amount", ".cost", ".valor", ".precio-actual",
             "[class*='amount']", "[class*='cost']", "[class*='valor']",
-            ".price-current", ".current-price"
+            ".price-current", ".current-price", "span.price", "span.precio",
+            "[data-price]", "[itemprop='price']", ".product-price", ".price-wrapper"
         ],
         "product_selectors": [
             ".product-item", ".product", ".item", ".producto",
             "[class*='product']", "[class*='item']", "[class*='resultado']",
-            ".search-result", ".result-item", ".product-card"
-        ]
+            ".search-result", ".result-item", ".product-card",
+            ".product-box", ".product-wrapper", ".product-container",
+            "article.product", "li.product", "div[class*='product']"
+        ],
+        "use_selenium": False,  # Intentar primero sin JS
+        "fallback_to_text": True  # Usar extracción de texto si fallan selectores
     },
     {
         "name": "Boticas Perú",
         "base_url": "https://boticasperu.pe",
         "search_url": "https://boticasperu.pe/catalogsearch/result/?q={query}",
         "price_selectors": [
-            ".price", ".precio", "[class*='price']", "[class*='precio']"
+            # Selectores específicos para Magento
+            "span.price", ".price", "[data-price-type]", "[class*='price']",
+            ".price-wrapper .price", ".price-box .price", ".price-final",
+            "[class*='price-box']", "[class*='price-wrapper']",
+            # Selectores genéricos
+            ".precio", "[class*='precio']", ".amount", ".cost"
         ],
         "product_selectors": [
-            ".product-item", ".product", ".item", ".producto"
-        ]
+            # Selectores específicos para Magento
+            ".products-grid .product-item", ".product-item", 
+            ".products-list .product-item", "li.product-item",
+            # Selectores genéricos
+            ".product", ".item", ".producto", "[class*='product-item']",
+            "article.product", "div[class*='product']"
+        ],
+        "use_selenium": False
+    },
+    {
+        "name": "Hogar y Salud",
+        "base_url": "https://www.hogarysalud.com.pe",
+        "search_url": "https://www.hogarysalud.com.pe/?s={query}&post_type=product",
+        "price_selectors": [
+            # Selectores específicos para WooCommerce
+            ".woocommerce-Price-amount", "span.woocommerce-Price-amount",
+            ".price", ".amount", "span.price", "span.amount",
+            "[class*='woocommerce-Price']", "[class*='woocommerce-price']",
+            ".product-price", ".price-wrapper", ".price-box",
+            # Selectores genéricos
+            ".precio", "[class*='price']", "[class*='precio']", "[data-price]"
+        ],
+        "product_selectors": [
+            # Selectores específicos para WooCommerce
+            ".woocommerce ul.products li.product",
+            "li.product", "article.product", ".product",
+            ".woocommerce-loop-product__link", ".product-item",
+            # Selectores genéricos
+            "[class*='product']", ".product-wrapper", ".product-box",
+            "div[class*='product']", "article[class*='product']"
+        ],
+        "use_selenium": False,
+        "fallback_to_text": True
+    },
+    {
+        "name": "Farmacia Universal",
+        "base_url": "https://www.farmaciauniversal.com",
+        "search_url": "https://www.farmaciauniversal.com/{query}?_q={query}&map=ft",
+        "price_selectors": [
+            ".price", ".vtex-product-price", "[class*='price']", "[class*='precio']",
+            ".vtex-store-components-3-x-sellingPrice", ".vtex-product-price-1-x-sellingPrice",
+            "[class*='vtex-price']", ".product-price", "span[class*='price']"
+        ],
+        "product_selectors": [
+            ".vtex-product-summary-2-x-container", ".vtex-search-result-3-x-galleryItem",
+            "[class*='product-summary']", "[class*='galleryItem']",
+            ".product-item", ".product", "[class*='product']"
+        ],
+        "use_selenium": True,  # VTEX requiere JS
+        "custom_search_url": True  # Requiere formato especial
+    },
+    {
+        "name": "Farmauna",
+        "base_url": "https://www.farmauna.com",
+        "search_url": "https://www.farmauna.com/search?q={query}",
+        "price_selectors": [
+            ".price", ".precio", "[class*='price']", "[class*='precio']",
+            ".product-price", ".price-value", "span.price", ".amount",
+            "[data-price]", "[class*='product-price']", "[data-price-value]",
+            ".selling-price", ".current-price", ".price-current"
+        ],
+        "product_selectors": [
+            ".product", ".product-item", ".product-card", "[class*='product']",
+            ".search-result-item", ".product-wrapper", ".item-product",
+            "[class*='search-result']", "[class*='product-card']",
+            "div[class*='product']", "article[class*='product']",
+            ".product-tile", ".product-box", ".product-container"
+        ],
+        "use_selenium": True,  # Sitio React, requiere renderizado
+        "fallback_to_text": True
+    },
+    {
+        "name": "Farmacias Lider",
+        "base_url": "https://www.farmaciaslider.pe",
+        "search_url": "https://www.farmaciaslider.pe/category_product_search?product_name={query}",
+        "price_selectors": [
+            ".price", ".precio", "[class*='price']", "[class*='precio']",
+            ".product-price", ".price-value", "span.price", ".amount",
+            "[data-price]", "[class*='product-price']", ".selling-price",
+            ".current-price", ".price-current", "[itemprop='price']",
+            ".price-wrapper", ".price-box"
+        ],
+        "product_selectors": [
+            ".product", ".product-item", ".product-card", "[class*='product']",
+            ".search-result", ".product-wrapper", ".item-product",
+            "[class*='search-result']", "[class*='product-card']", ".product-list-item",
+            "div[class*='product']", "article[class*='product']",
+            ".product-tile", ".product-box", ".product-container"
+        ],
+        "use_selenium": False,
+        "fallback_to_text": True
+    },
+    {
+        "name": "Farmacenter",
+        "base_url": "https://farmacenter.com.pe",
+        "search_url": "https://farmacenter.com.pe/?s={query}&post_type=product",
+        "price_selectors": [
+            # Selectores específicos para WooCommerce
+            ".woocommerce-Price-amount", "span.woocommerce-Price-amount",
+            ".price", ".amount", "span.price", "span.amount",
+            "[class*='woocommerce-Price']", "[class*='woocommerce-price']",
+            ".product-price", ".price-wrapper", ".price-box",
+            # Selectores genéricos
+            ".precio", "[class*='price']", "[class*='precio']", "[data-price]"
+        ],
+        "product_selectors": [
+            # Selectores específicos para WooCommerce
+            ".woocommerce ul.products li.product",
+            "li.product", "article.product", ".product",
+            ".woocommerce-loop-product__link", ".product-item",
+            # Selectores genéricos
+            "[class*='product']", ".product-wrapper", ".product-box",
+            "div[class*='product']", "article[class*='product']"
+        ],
+        "use_selenium": False,
+        "fallback_to_text": True
     }
 ]
 
@@ -534,6 +682,16 @@ def extract_multiple_products(html: str, base_url: str, pharmacy_info: dict) -> 
         for script in soup(["script", "style", "nav", "footer", "header"]):
             script.decompose()
         
+        # Check if this pharmacy uses ONLY text extraction (skip selectors)
+        use_text_extraction_only = pharmacy_info.get("use_text_extraction", False)
+        
+        if use_text_extraction_only:
+            print(f"    [TEXT] Using text extraction only for {pharmacy_info['name']} (Angular/React app)")
+            # Obtener query del contexto si está disponible
+            query = pharmacy_info.get("_current_query", "")
+            products = extract_products_from_text(soup.get_text(), base_url, pharmacy_info, query=query)
+            return products
+        
         # Use pharmacy-specific product selectors
         product_selectors = pharmacy_info.get("product_selectors", [
             ".product-item", ".product", ".item", ".producto",
@@ -544,37 +702,74 @@ def extract_multiple_products(html: str, base_url: str, pharmacy_info: dict) -> 
         for selector in product_selectors:
             containers = soup.select(selector)
             if containers:
-                product_containers = containers
+                product_containers.extend(containers)
                 print(f"    Found {len(containers)} containers with selector: {selector}")
-                break
+        # De-dup containers by id/memory
+        try:
+            seen_ids = set()
+            uniq = []
+            for c in product_containers:
+                cid = id(c)
+                if cid in seen_ids: 
+                    continue
+                seen_ids.add(cid)
+                uniq.append(c)
+            product_containers = uniq
+        except Exception:
+            pass
         
         # If no specific product containers found, look for price elements
         if not product_containers:
             # Look for any element containing a price
             price_elements = []
-            for selector in pharmacy_info.get("price_selectors", [".price", ".precio"]):
-                elements = soup.select(selector)
-                price_elements.extend(elements)
-                if elements:
-                    print(f"    Found {len(elements)} price elements with selector: {selector}")
+            price_selectors = pharmacy_info.get("price_selectors", [".price", ".precio"])
+            for selector in price_selectors:
+                try:
+                    elements = soup.select(selector)
+                    if elements:
+                        price_elements.extend(elements)
+                        print(f"    Found {len(elements)} price elements with selector: {selector}")
+                except Exception as sel_error:
+                    print(f"    [WARN] Error with selector {selector}: {sel_error}")
+                    continue
             
             if price_elements:
+                # Remove duplicates by text content
+                seen_prices = set()
+                unique_price_elements = []
+                for pe in price_elements:
+                    price_text = normalize_price(pe.get_text().strip())
+                    if price_text and price_text not in seen_prices:
+                        seen_prices.add(price_text)
+                        unique_price_elements.append(pe)
+                
                 # Group nearby elements as products
-                for price_elem in price_elements[:10]:  # Limit to first 10
+                for price_elem in unique_price_elements[:50]:  # Aumentado límite
                     product_info = extract_single_product_from_element(price_elem, base_url)
                     if product_info:
                         products.append(product_info)
         else:
             # Extract from product containers
-            for container in product_containers[:10]:  # Limit to first 10
-                product_info = extract_single_product_from_container(container, base_url, pharmacy_info)
-                if product_info:
-                    products.append(product_info)
+            # Remove duplicates by checking if we've seen similar products
+            seen_products = set()
+            for container in product_containers[:50]:  # Aumentado límite
+                try:
+                    product_info = extract_single_product_from_container(container, base_url, pharmacy_info)
+                    if product_info and product_info.get("price"):
+                        # Create a key to avoid duplicates
+                        product_key = (product_info.get("name", "").upper()[:50], product_info.get("price"))
+                        if product_key not in seen_products:
+                            seen_products.add(product_key)
+                            products.append(product_info)
+                except Exception as cont_error:
+                    print(f"    [WARN] Error extracting from container: {cont_error}")
+                    continue
         
         # If still no products found, try to extract from text patterns
         if not products:
-            print(f"    No products found with selectors, trying text extraction...")
-            products = extract_products_from_text(soup.get_text(), base_url, pharmacy_info)
+            print(f"    [TEXT] No products found with selectors, trying text extraction...")
+            query = pharmacy_info.get("_current_query", "")
+            products = extract_products_from_text(soup.get_text(), base_url, pharmacy_info, query=query)
         
         return products
     except Exception as e:
@@ -630,17 +825,22 @@ def extract_single_product_from_element(price_elem, base_url: str) -> dict:
     except Exception:
         return {}
 
-def extract_products_from_text(text: str, base_url: str, pharmacy_info: dict) -> list:
+def extract_products_from_text(text: str, base_url: str, pharmacy_info: dict, query: str = "") -> list:
     """Extract products from text patterns when selectors fail"""
     products = []
     try:
         import re
         
+        print(f"    [TEXT] Analyzing text for {pharmacy_info['name']}...")
+        print(f"    [TEXT] Text length: {len(text)} characters")
+        
         # Look for price patterns in the text
         price_patterns = [
             r"S/\.?\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)",
             r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)\s*S/\.?",
-            r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)\s*soles?"
+            r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)\s*soles?",
+            r"PEN\s*(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)",
+            r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)\s*PEN"
         ]
         
         found_prices = []
@@ -652,52 +852,112 @@ def extract_products_from_text(text: str, base_url: str, pharmacy_info: dict) ->
                 try:
                     price_num = float(match.replace(",", "."))
                     if 0.01 <= price_num <= 10000:  # Reasonable price range
-                        found_prices.append(f"S/ {match}")
+                        price_str = f"S/ {match}"
+                        if price_str not in found_prices:
+                            found_prices.append(price_str)
                 except ValueError:
                     continue
         
-        print(f"    Found {len(found_prices)} price patterns: {found_prices[:3]}")
+        print(f"    [TEXT] Found {len(found_prices)} unique prices")
         
-        # Try to find product names near prices
+        # Buscar nombres de productos cerca de los precios
         lines = text.split('\n')
-        for i, line in enumerate(lines):
-            for price in found_prices[:5]:  # Limit to first 5 prices
-                if price.replace("S/ ", "") in line:
-                    # Look for product name in nearby lines
-                    product_name = ""
-                    for j in range(max(0, i-3), min(len(lines), i+3)):
-                        nearby_line = lines[j].strip()
-                        if (len(nearby_line) > 5 and len(nearby_line) < 150 and 
-                            nearby_line != price and not nearby_line.isdigit()):
-                            if not any(skip in nearby_line.lower() for skip in 
-                                     ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'precio', 'soles']):
-                                product_name = nearby_line
-                                break
-                    
-                    if product_name:
-                        products.append({
-                            "name": product_name,
-                            "price": price,
-                            "url": base_url
-                        })
-                        print(f"    ✓ Extracted: {product_name} - {price}")
-                        break
+        query_lower = query.lower() if query else ""
         
-        # If still no products, try to create generic products with found prices
+        # Buscar líneas que contengan el query y un precio cerca
+        for i, line in enumerate(lines):
+            line_lower = line.lower()
+            # Buscar si la línea contiene el query o un precio
+            has_query = query_lower and query_lower in line_lower
+            has_price = any(price.replace("S/ ", "").replace(".", "").replace(",", "") in line.replace("S/", "").replace(".", "").replace(",", "") for price in found_prices)
+            
+            if has_price or has_query:
+                # Buscar precio en esta línea o líneas cercanas
+                price_found = None
+                for price in found_prices:
+                    price_clean = price.replace("S/ ", "").replace(".", "").replace(",", "")
+                    line_clean = line.replace("S/", "").replace(".", "").replace(",", "")
+                    if price_clean in line_clean:
+                        price_found = price
+                        break
+                
+                # Si no hay precio en esta línea, buscar en líneas cercanas
+                if not price_found:
+                    for j in range(max(0, i-2), min(len(lines), i+3)):
+                        nearby_line = lines[j]
+                        for price in found_prices:
+                            price_clean = price.replace("S/ ", "").replace(".", "").replace(",", "")
+                            nearby_clean = nearby_line.replace("S/", "").replace(".", "").replace(",", "")
+                            if price_clean in nearby_clean:
+                                price_found = price
+                                break
+                        if price_found:
+                            break
+                
+                if price_found:
+                    # Buscar nombre del producto
+                    product_name = ""
+                    
+                    # Primero intentar en la misma línea
+                    line_clean = re.sub(r"S/\.?\s*\d+[.,]?\d*", "", line).strip()
+                    if len(line_clean) > 5 and len(line_clean) < 150:
+                        if not any(skip in line_clean.lower() for skip in 
+                                 ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'precio', 'soles', 'click', 'button', 'cantidad', 'añadir']):
+                            product_name = line_clean
+                    
+                    # Si no, buscar en líneas cercanas
+                    if not product_name:
+                        for j in range(max(0, i-3), min(len(lines), i+4)):
+                            nearby_line = lines[j].strip()
+                            nearby_clean = re.sub(r"S/\.?\s*\d+[.,]?\d*", "", nearby_line).strip()
+                            if (len(nearby_clean) > 8 and len(nearby_clean) < 150 and 
+                                not nearby_clean.isdigit() and
+                                not any(skip in nearby_clean.lower() for skip in 
+                                       ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'precio', 'soles', 'click', 'button', 'cantidad', 'añadir', 'carrito'])):
+                                # Preferir líneas que contengan el query
+                                if query_lower and query_lower in nearby_clean.lower():
+                                    product_name = nearby_clean
+                                    break
+                                elif not product_name:
+                                    product_name = nearby_clean
+                    
+                    # Si aún no hay nombre, usar el query
+                    if not product_name and query:
+                        product_name = query.upper()
+                    
+                    if product_name and price_found:
+                        # Evitar duplicados
+                        combo_key = (product_name[:50].upper(), price_found)
+                        if not any(p.get("name", "").upper() == product_name.upper() and p.get("price") == price_found for p in products):
+                            products.append({
+                                "name": product_name,
+                                "price": price_found,
+                                "url": base_url
+                            })
+                            print(f"    [TEXT] OK Extracted: {product_name[:50]} - {price_found}")
+                            if len(products) >= 50:  # Aumentado el límite
+                                break
+        
+        # Si aún no hay productos, crear con precios encontrados
         if not products and found_prices:
-            print(f"    Creating generic products with found prices...")
-            for i, price in enumerate(found_prices[:3]):
+            print(f"    [TEXT] Creating products with found prices...")
+            for i, price in enumerate(found_prices[:20]):  # Aumentado a 20
+                product_name = query.upper() if query else f"Producto {pharmacy_info['name']}"
                 products.append({
-                    "name": f"Producto {pharmacy_info['name']} {i+1}",
+                    "name": product_name,
                     "price": price,
                     "url": base_url
                 })
-                print(f"    ✓ Created: Producto {pharmacy_info['name']} {i+1} - {price}")
+                if len(products) >= 20:
+                    break
         
-        return products[:5]  # Limit to 5 products
+        print(f"    [TEXT] Total products extracted: {len(products)}")
+        return products[:50]  # Aumentado el límite a 50
         
     except Exception as e:
-        print(f"Error extracting from text: {e}")
+        print(f"    [TEXT] Error extracting from text: {e}")
+        import traceback
+        print(traceback.format_exc())
         return products
 
 def extract_single_product_from_container(container, base_url: str, pharmacy_info: dict = None) -> dict:
@@ -735,6 +995,18 @@ def extract_single_product_from_container(container, base_url: str, pharmacy_inf
                     if not any(skip in name_text.lower() for skip in ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'carrito']):
                         product_name = name_text
                         break
+        # Try title/alt attributes if still no name
+        if not product_name:
+            try:
+                link = container.select_one("a[href]")
+                if link:
+                    for attr in ("title", "aria-label", "alt"):
+                        t = (link.get(attr) or "").strip()
+                        if 5 < len(t) < 150 and not any(w in t.lower() for w in ['agregar','comprar','carrito']):
+                            product_name = t
+                            break
+            except Exception:
+                pass
         
         # If still no name, try to extract from the container's text
         if not product_name:
@@ -859,26 +1131,208 @@ def search_pharmacy_direct(query: str, pharmacy_info: dict, timeout=8) -> list:
     """Search directly on a pharmacy website using specific search URL"""
     results = []
     try:
-        search_url = pharmacy_info["search_url"].format(query=query)
-        print(f"    🔍 Searching: {pharmacy_info['name']} - {search_url}")
-        
-        r = requests.get(search_url, headers=HDRS, timeout=timeout)
-        if r.status_code == 200:
-            # Extract multiple products from the search results page
-            products = extract_multiple_products(r.text, search_url, pharmacy_info)
-            for product in products:
-                if product.get("price"):
-                    results.append({
-                        "Producto (Marca comercial)": product.get("name", query.upper()),
-                        "Precio": product["price"],
-                        "Farmacia / Fuente": pharmacy_info["name"],
-                        "Enlace": product.get("url", search_url),
-                        "_ORIGEN": "WEB"
-                    })
+        # Manejar URLs especiales que requieren formato diferente
+        search_url_template = pharmacy_info["search_url"]
+        if pharmacy_info.get("custom_search_url", False):
+            # Para Farmacia Universal: usar formato especial
+            if pharmacy_info["name"] == "Farmacia Universal":
+                # URLencode el query para la URL
+                from urllib.parse import quote
+                query_encoded = quote(query)
+                search_url = f"https://www.farmaciauniversal.com/{query_encoded}?_q={query_encoded}&map=ft"
+            else:
+                search_url = search_url_template.replace("{query}", query)
+        elif "{query}" in search_url_template:
+            # Si hay múltiples {query}, reemplazar todos
+            search_url = search_url_template.replace("{query}", query)
         else:
-            print(f"    ✗ {pharmacy_info['name']}: HTTP {r.status_code}")
+            search_url = search_url_template.format(query=query)
+        
+        print(f"    [SEARCH] {pharmacy_info['name']}: {search_url}")
+        
+        # Guardar query en pharmacy_info para uso en extracción
+        pharmacy_info["_current_query"] = query
+        
+        try:
+            r = requests.get(search_url, headers=HDRS, timeout=timeout)
+        except requests.exceptions.Timeout:
+            print(f"    [ERROR] {pharmacy_info['name']}: Timeout")
+            return results
+        except requests.exceptions.ConnectionError as ce:
+            print(f"    [ERROR] {pharmacy_info['name']}: Connection error - {ce}")
+            return results
+        except Exception as req_error:
+            print(f"    [ERROR] {pharmacy_info['name']}: Request error - {req_error}")
+            return results
+        
+        if r.status_code == 200:
+            # Sitios con JS: intentar renderizar con Selenium si está configurado
+            use_selenium = pharmacy_info.get("use_selenium", False) or pharmacy_info.get("use_text_extraction", False)
+            if use_selenium:
+                rendered_html = ""
+                rendered_text = ""
+                try:
+                    from selenium import webdriver
+                    from selenium.webdriver.chrome.options import Options
+                    from selenium.webdriver.common.by import By
+                    from selenium.webdriver.support.ui import WebDriverWait
+                    from selenium.webdriver.support import expected_conditions as EC
+                    # Driver manager para asegurar ChromeDriver disponible
+                    try:
+                        from selenium.webdriver.chrome.service import Service
+                        from webdriver_manager.chrome import ChromeDriverManager
+                        _service = Service(ChromeDriverManager().install())
+                    except Exception:
+                        _service = None
+
+                    chrome_options = Options()
+                    chrome_options.add_argument("--headless=new")
+                    chrome_options.add_argument("--no-sandbox")
+                    chrome_options.add_argument("--disable-dev-shm-usage")
+                    chrome_options.add_argument("--disable-gpu")
+                    chrome_options.add_argument("--window-size=1366,768")
+                    chrome_options.add_argument(f"--user-agent={UA}")
+                    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+                    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"]) 
+                    chrome_options.add_experimental_option('useAutomationExtension', False)
+
+                    driver = None
+                    try:
+                        driver = webdriver.Chrome(service=_service, options=chrome_options) if _service else webdriver.Chrome(options=chrome_options)
+                        driver.get(search_url)
+                        # Esperar contenido dinámico razonable
+                        try:
+                            WebDriverWait(driver, 12).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "a, div, span"))
+                            )
+                        except Exception:
+                            pass
+                        # Intentar cerrar banners de consentimiento/cookies
+                        try:
+                            for sel in [
+                                "#consent-banner button",
+                                "#onetrust-accept-btn-handler",
+                                "button[aria-label='Aceptar']",
+                                "button[aria-label='ACEPTAR']",
+                                "button.cookie-accept",
+                                "button:contains('Aceptar')"
+                            ]:
+                                btns = driver.find_elements(By.CSS_SELECTOR, sel) if ":contains(" not in sel else []
+                                if btns:
+                                    try:
+                                        btns[0].click()
+                                        break
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                        # Desplazar para activar carga de listados y esperar a que aparezcan precios/texto
+                        import time as _t
+                        for _ in range(6):
+                            driver.execute_script("window.scrollBy(0, document.body.scrollHeight/2);")
+                            _t.sleep(1.0)
+                        # Intentar presionar "ver más" / "cargar más"
+                        try:
+                            for btn_sel in [
+                                "button[aria-label*='ver más']",
+                                "button[aria-label*='Ver más']",
+                                "button:contains('ver más')",
+                                "button:contains('Ver más')",
+                                "button.load-more", "button.more", "button[ng-click*='more']"
+                            ]:
+                                btns = driver.find_elements(By.CSS_SELECTOR, btn_sel) if ":contains(" not in btn_sel else []
+                                if btns:
+                                    try:
+                                        btns[0].click(); _t.sleep(1.0)
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                        # Espera adicional a que aparezca patrón de precio en el HTML
+                        tries = 0
+                        while tries < 5:
+                            html_tmp = driver.page_source or ""
+                            if ("S/" in html_tmp) or (query.lower() in html_tmp.lower()):
+                                break
+                            _t.sleep(1.0)
+                            tries += 1
+                        rendered_html = driver.page_source or ""
+                        # Extraer texto renderizado del body (mejor para buscar por regex)
+                        def _capture_body_text():
+                            try:
+                                return driver.execute_script("return document.body.innerText || ''") or ""
+                            except Exception:
+                                return ""
+                        rendered_text = _capture_body_text()
+                        if len(rendered_text) < 500:
+                            # Dar un tiempo extra para que aparezcan precios cargados por JS
+                            _t.sleep(2.0)
+                            rendered_text = _capture_body_text()
+                        if len(rendered_text) < 500:
+                            try:
+                                driver.execute_script("window.scrollTo(0, 0);")
+                                _t.sleep(1.0)
+                            except Exception:
+                                pass
+                            rendered_text = _capture_body_text()
+                    finally:
+                        if driver:
+                            try:
+                                driver.quit()
+                            except Exception as qe:
+                                print(f"    [WARN] Error closing driver: {qe}")
+                                try:
+                                    driver.close()
+                                except:
+                                    pass
+                except Exception as se:
+                    print(f"    [WARN] Selenium no disponible/funcionó: {se}")
+                    rendered_html = ""
+                    rendered_text = ""
+
+                used_js = bool(rendered_html) and (len(rendered_html) >= len(r.text))
+                html_to_use = rendered_html if used_js else r.text
+                products = extract_multiple_products(html_to_use, search_url, pharmacy_info)
+                # Si con selectores no se obtuvo nada, usar el texto plano renderizado
+                if not products and (rendered_text and len(rendered_text) > 200):
+                    print("    [TEXT] No products via selectors. Trying rendered text extraction…")
+                    pharmacy_info["_current_query"] = query
+                    products = extract_products_from_text(rendered_text, search_url, pharmacy_info, query=query)
+            else:
+                # Sitios sin JS: extracción normal
+                used_js = False
+                pharmacy_info["_current_query"] = query
+                products = extract_multiple_products(r.text, search_url, pharmacy_info)
+                # Si no se encontraron productos y está habilitado fallback_to_text, intentar extracción de texto
+                if not products and pharmacy_info.get("fallback_to_text", False):
+                    print("    [TEXT] No products found with selectors, trying text extraction as fallback...")
+                    try:
+                        from bs4 import BeautifulSoup
+                        soup_fallback = BeautifulSoup(r.text, "lxml")
+                        text_fallback = soup_fallback.get_text()
+                    except Exception:
+                        text_fallback = r.text
+                    products = extract_products_from_text(text_fallback, search_url, pharmacy_info, query=query)
+            # Procesar productos encontrados (tanto con JS como sin JS)
+            for product in products:
+                try:
+                    if product and isinstance(product, dict) and product.get("price"):
+                        results.append({
+                            "Producto (Marca comercial)": product.get("name", query.upper()),
+                            "Precio": product["price"],
+                            "Farmacia / Fuente": pharmacy_info["name"],
+                            "Enlace": product.get("url", search_url),
+                            "_ORIGEN": ("WEB_JS" if (use_selenium and used_js) else "WEB")
+                        })
+                except Exception as pe:
+                    print(f"    [WARN] Error processing product: {pe}")
+                    import traceback
+                    print(traceback.format_exc())
+                    continue
+        else:
+            print(f"    [ERROR] {pharmacy_info['name']}: HTTP {r.status_code}")
     except Exception as e:
-        print(f"    ✗ {pharmacy_info['name']}: {e}")
+        print(f"    [ERROR] {pharmacy_info['name']}: {e}")
     
     return results
 
@@ -913,50 +1367,82 @@ def save_web_results_to_csv(web_results: list):
         
         # Add new rows to main DataFrame
         if new_rows:
-            df_new = pd.DataFrame(new_rows)
-            df_main = pd.concat([df_main, df_new], ignore_index=True)
-            
-            # Remove duplicates based on product name, price, and pharmacy
-            df_main = df_main.drop_duplicates(
-                subset=["Producto (Marca comercial)", "Precio", "Farmacia / Fuente"], 
-                keep="first"
-            )
-            
-            # Save back to CSV
-            df_main.to_excel(EXCEL_PATH, index=False)
-            print(f"💾 Saved {len(new_rows)} web results to main CSV")
+            try:
+                df_new = pd.DataFrame(new_rows)
+                df_main = pd.concat([df_main, df_new], ignore_index=True)
+                
+                # Remove duplicates based on product name, price, and pharmacy
+                df_main = df_main.drop_duplicates(
+                    subset=["Producto (Marca comercial)", "Precio", "Farmacia / Fuente"], 
+                    keep="first"
+                )
+                
+                # Save back to CSV
+                df_main.to_excel(EXCEL_PATH, index=False, engine='openpyxl')
+                print(f"[CACHE] Saved {len(new_rows)} web results to main CSV")
+            except Exception as save_ex:
+                print(f"[WARN] Error in DataFrame operations: {save_ex}")
+                # Intentar guardar solo los nuevos resultados si falla la concatenación
+                try:
+                    df_new_only = pd.DataFrame(new_rows)
+                    df_new_only.to_excel(EXCEL_PATH, index=False, engine='openpyxl')
+                    print(f"[CACHE] Saved {len(new_rows)} new results (replaced file)")
+                except Exception as save_ex2:
+                    print(f"[WARN] Could not save results: {save_ex2}")
     
     except Exception as e:
-        print(f"Error saving web results to CSV: {e}")
+        print(f"[WARN] Error saving web results to CSV: {e}")
+        import traceback
+        print(traceback.format_exc())
 
-def fetch_prices_online(query: str, max_sites: int = 30, timeout=8):
+def fetch_prices_online(query: str, selected_pharmacies: list = None, max_sites: int = 30, timeout=8):
     """Enhanced web scraping for Peruvian pharmacies - Comprehensive version"""
-    print(f"🔍 Searching for: {query}")
+    print(f"[INFO] Searching for: {query}")
     out, seen = [], set()
     
-    # 1. Search directly on ALL Peruvian pharmacy websites
-    print("📱 Searching Peruvian pharmacies directly...")
-    for i, pharmacy_info in enumerate(PERUVIAN_PHARMACIES, 1):
-        print(f"  [{i}/{len(PERUVIAN_PHARMACIES)}] Searching {pharmacy_info['name']}...")
+    # Filtrar farmacias según selección del usuario
+    pharmacies_to_search = PERUVIAN_PHARMACIES
+    if selected_pharmacies and len(selected_pharmacies) > 0:
+        pharmacies_to_search = [p for p in PERUVIAN_PHARMACIES if p["name"] in selected_pharmacies]
+        print(f"[INFO] Searching in {len(pharmacies_to_search)} selected pharmacies: {', '.join([p['name'] for p in pharmacies_to_search])}")
+    else:
+        print(f"[INFO] No pharmacies selected, searching in all {len(PERUVIAN_PHARMACIES)} pharmacies")
+        # Si no hay selección y está en modo WEB/AMBOS, buscar en todas por defecto
+        pharmacies_to_search = PERUVIAN_PHARMACIES
+    
+    # 1. Search directly on selected Peruvian pharmacy websites
+    print("[INFO] Searching Peruvian pharmacies directly...")
+    for i, pharmacy_info in enumerate(pharmacies_to_search, 1):
+        print(f"  [{i}/{len(pharmacies_to_search)}] Searching {pharmacy_info['name']}...")
         try:
             results = search_pharmacy_direct(query, pharmacy_info, timeout=timeout)
             for result in results:
-                key = (result["Farmacia / Fuente"], result["Precio"], result["Enlace"])
-                if key not in seen:
-                    seen.add(key)
-                    out.append(result)
-                    print(f"    ✓ Found: {result['Precio']} - {result['Producto (Marca comercial)']} at {result['Farmacia / Fuente']}")
-                    if len(out) >= max_sites:  # Stop if we have enough results
-                        break
+                try:
+                    key = (result.get("Farmacia / Fuente", ""), result.get("Precio", ""), result.get("Enlace", ""))
+                    if key not in seen and result.get("Precio"):
+                        seen.add(key)
+                        out.append(result)
+                        print(f"    [OK] Found: {result.get('Precio', 'N/A')} - {result.get('Producto (Marca comercial)', 'N/A')} at {result.get('Farmacia / Fuente', 'N/A')}")
+                        if len(out) >= max_sites:  # Stop if we have enough results
+                            break
+                except Exception as result_error:
+                    print(f"    [WARN] Error processing result from {pharmacy_info['name']}: {result_error}")
+                    continue
             if len(out) >= max_sites:
                 break
+        except KeyboardInterrupt:
+            print(f"    [WARN] Interrupted while searching {pharmacy_info['name']}")
+            raise
         except Exception as e:
-            print(f"    ✗ Error with {pharmacy_info['name']}: {e}")
+            print(f"    [ERROR] Error with {pharmacy_info['name']}: {e}")
+            import traceback
+            print(traceback.format_exc())
+            # Continuar con la siguiente farmacia en lugar de detener todo
             continue
     
     # 2. Search using DuckDuckGo if we need more results
     if len(out) < 10:
-        print("🦆 Searching with DuckDuckGo...")
+        print("[INFO] Searching with DuckDuckGo...")
         try:
             ddg_urls = ddg_results(query, max_urls=8, timeout=timeout)
             for i, url in enumerate(ddg_urls[:5], 1):  # Limit to first 5 URLs
@@ -977,18 +1463,22 @@ def fetch_prices_online(query: str, max_sites: int = 30, timeout=8):
                                     "Enlace": url,
                                     "_ORIGEN": "WEB"
                                 })
-                                print(f"    ✓ Found: {info['price']} at {dom}")
+                                print(f"    [OK] Found: {info['price']} at {dom}")
                 except Exception as e:
-                    print(f"    ✗ Error with {url}: {e}")
+                    print(f"    [ERROR] Error with {url}: {e}")
                     continue
         except Exception as e:
-            print(f"  ✗ DuckDuckGo error: {e}")
+            print(f"[ERROR] DuckDuckGo error: {e}")
     
     # 3. Save results to main CSV for future searches
     if out:
-        save_web_results_to_csv(out)
+        try:
+            save_web_results_to_csv(out)
+        except Exception as save_error:
+            print(f"[WARN] Error saving results to CSV: {save_error}")
+            # No detener el proceso si falla el guardado
     
-    print(f"🎯 Total results found: {len(out)}")
+    print(f"[INFO] Total results found: {len(out)}")
     return out[:max_sites]  # Limit results
 
 # --------- Helpers front ----------
@@ -1063,6 +1553,15 @@ def static_logo():
     return send_file(io.BytesIO(png1x1), mimetype="image/png")
 
 # --------- API: Búsqueda y Vista ----------
+@app.route("/api/pharmacies")
+def api_pharmacies():
+    """Obtiene la lista de farmacias disponibles"""
+    if "user" not in session: 
+        return jsonify({"error":"unauth"}), 401
+    
+    pharmacies = [{"name": p["name"], "base_url": p["base_url"]} for p in PERUVIAN_PHARMACIES]
+    return jsonify({"pharmacies": pharmacies})
+
 @app.route("/api/search")
 def api_search():
     """Busca en BASE/EXTRA y/o en WEB, opcionalmente combinados."""
@@ -1072,8 +1571,9 @@ def api_search():
     q = (request.args.get("q") or "").strip()
     scope = (request.args.get("scope") or "PRODUCTO").upper()  # PRODUCTO | PRINCIPIO ACTIVO | AMBOS
     mode  = (request.args.get("mode") or "base").lower()       # base | web | both
+    selected_pharmacies = request.args.getlist("pharmacy")  # Lista de farmacias seleccionadas
     
-    print(f"Search query: '{q}', scope: {scope}, mode: {mode}")  # Debug
+    print(f"Search query: '{q}', scope: {scope}, mode: {mode}, pharmacies: {selected_pharmacies}")  # Debug
     
     if not q:
         st = get_state()
@@ -1129,7 +1629,8 @@ def api_search():
     # Buscar en WEB
     if mode in ("web","both"):
         try:
-            web_rows = fetch_prices_online(q, max_sites=40)
+            # Si no hay farmacias seleccionadas y está en modo WEB/AMBOS, usar todas
+            web_rows = fetch_prices_online(q, selected_pharmacies=selected_pharmacies if selected_pharmacies else None, max_sites=40)
             print(f"Found {len(web_rows)} web results")  # Debug
             
             # homogeniza columnas extra
@@ -1339,34 +1840,62 @@ def api_admin_edit_row():
     
     try:
         data = request.get_json()
-        if not data or "index" not in data:
-            return jsonify({"error":"no_data_or_index"}), 400
-        
-        index = int(data["index"])
+        if not data:
+            return jsonify({"error":"no_data"}), 400
         
         # Load current data
         df_main = load_normalized(EXCEL_PATH, "main")
         
-        if index >= len(df_main):
-            return jsonify({"error":"index_out_of_range"}), 400
+        if df_main.empty:
+            return jsonify({"error":"no_data_in_file"}), 400
+        
+        # Buscar la fila usando identificadores únicos
+        original_codigo = data.get("original_codigo", "").strip()
+        original_producto = data.get("original_producto", "").strip().upper()
+        original_digemid = data.get("original_digemid", "").strip()
+        
+        # Buscar la fila en el DataFrame
+        mask = pd.Series([False] * len(df_main))
+        
+        if original_codigo:
+            mask |= (df_main["CÓDIGO PRODUCTO"].astype(str).str.strip() == original_codigo)
+        if original_digemid:
+            mask |= (df_main["N° DIGEMID"].astype(str).str.strip() == original_digemid)
+        if original_producto:
+            mask |= (df_main["Producto (Marca comercial)"].astype(str).str.strip().str.upper() == original_producto)
+        
+        matching_rows = df_main[mask]
+        
+        if len(matching_rows) == 0:
+            return jsonify({"error":"row_not_found"}), 404
+        
+        if len(matching_rows) > 1:
+            # Si hay múltiples coincidencias, usar la primera
+            print(f"Warning: Multiple rows found, using first match")
+        
+        # Obtener el índice real en el DataFrame
+        real_index = matching_rows.index[0]
         
         # Update row
         for col in BASE_COLUMNS_STD + EXTRA_COLUMNS:
-            if col in data:
+            if col in data and col not in ("original_codigo", "original_producto", "original_digemid"):
                 value = data[col]
                 if col in _TEXT_COLS:
                     value = str(value).upper()
-                df_main.at[index, col] = value
+                df_main.at[real_index, col] = value
         
         # Handle CÓDIGO PRODUCTO and N° DIGEMID
-        if not str(df_main.at[index, "CÓDIGO PRODUCTO"]).strip() and str(df_main.at[index, "N° DIGEMID"]).strip():
-            df_main.at[index, "CÓDIGO PRODUCTO"] = df_main.at[index, "N° DIGEMID"]
-        df_main.at[index, "N° DIGEMID"] = df_main.at[index, "CÓDIGO PRODUCTO"]
+        if not str(df_main.at[real_index, "CÓDIGO PRODUCTO"]).strip() and str(df_main.at[real_index, "N° DIGEMID"]).strip():
+            df_main.at[real_index, "CÓDIGO PRODUCTO"] = df_main.at[real_index, "N° DIGEMID"]
+        df_main.at[real_index, "N° DIGEMID"] = df_main.at[real_index, "CÓDIGO PRODUCTO"]
         
-        df_main.to_excel(EXCEL_PATH, index=False)
+        df_main.to_excel(EXCEL_PATH, index=False, engine='openpyxl')
         
         return jsonify({"ok":True, "message":"Registro editado correctamente"})
     except Exception as e:
+        import traceback
+        print(f"Error editing row: {e}")
+        print(traceback.format_exc())
         return jsonify({"error":str(e)}), 500
 
 @app.route("/api/admin/delete_row", methods=["POST"])
@@ -1376,23 +1905,51 @@ def api_admin_delete_row():
     
     try:
         data = request.get_json()
-        if not data or "index" not in data:
-            return jsonify({"error":"no_data_or_index"}), 400
-        
-        index = int(data["index"])
+        if not data:
+            return jsonify({"error":"no_data"}), 400
         
         # Load current data
         df_main = load_normalized(EXCEL_PATH, "main")
         
-        if index >= len(df_main):
-            return jsonify({"error":"index_out_of_range"}), 400
+        if df_main.empty:
+            return jsonify({"error":"no_data_in_file"}), 400
+        
+        # Buscar la fila usando identificadores únicos
+        codigo = data.get("codigo", "").strip()
+        producto = data.get("producto", "").strip().upper()
+        digemid = data.get("digemid", "").strip()
+        
+        # Buscar la fila en el DataFrame
+        mask = pd.Series([False] * len(df_main))
+        
+        if codigo:
+            mask |= (df_main["CÓDIGO PRODUCTO"].astype(str).str.strip() == codigo)
+        if digemid:
+            mask |= (df_main["N° DIGEMID"].astype(str).str.strip() == digemid)
+        if producto:
+            mask |= (df_main["Producto (Marca comercial)"].astype(str).str.strip().str.upper() == producto)
+        
+        matching_rows = df_main[mask]
+        
+        if len(matching_rows) == 0:
+            return jsonify({"error":"row_not_found"}), 404
+        
+        if len(matching_rows) > 1:
+            # Si hay múltiples coincidencias, usar la primera
+            print(f"Warning: Multiple rows found, deleting first match")
+        
+        # Obtener el índice real en el DataFrame
+        real_index = matching_rows.index[0]
         
         # Delete row
-        df_main = df_main.drop(index=index).reset_index(drop=True)
-        df_main.to_excel(EXCEL_PATH, index=False)
+        df_main = df_main.drop(index=real_index).reset_index(drop=True)
+        df_main.to_excel(EXCEL_PATH, index=False, engine='openpyxl')
         
         return jsonify({"ok":True, "message":"Registro eliminado correctamente"})
     except Exception as e:
+        import traceback
+        print(f"Error deleting row: {e}")
+        print(traceback.format_exc())
         return jsonify({"error":str(e)}), 500
 
 # --------- User Management (solo admin) ----------
@@ -1727,6 +2284,10 @@ tr:hover {{ background: rgba(255,255,255,0.05); }}
 
   <div class="controls">
     <div class="pill">
+      <label style="color:#c7d6ea; font-size:13px; white-space:nowrap;">Farmacias a buscar:</label>
+      <div id="pharmacySelectors" class="pharmacy-checkboxes"></div>
+    </div>
+    <div class="pill">
       <span>🔎</span>
       <input id="q" type="text" placeholder="Ej: paracetamol 500 mg">
       <select id="scope">
@@ -1807,8 +2368,9 @@ tr:hover {{ background: rgba(255,255,255,0.05); }}
 # ---- Main
 if __name__ == "__main__":
     ensure_all_files()
-    # Para desarrollo local
-    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    # Para desarrollo local - desactivar reloader si causa problemas
+    use_reloader = os.environ.get("FLASK_RELOAD", "true").lower() == "true"
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), use_reloader=use_reloader)
 else:
     # Para producción (cuando se ejecuta con gunicorn)
     ensure_all_files()
