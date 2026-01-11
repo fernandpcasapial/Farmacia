@@ -46,11 +46,13 @@ os.makedirs(USER_DATA_DIR, exist_ok=True)
 
 DATA_BASENAME  = "fuente.xlsx"      # Base editable
 EXTRA_BASENAME = "productos1.xlsx"  # Base adicional (consulta)
+DIGEMID_BASENAME = "digemid_base.xlsx"  # Base DIGEMID (puede tener múltiples fuentes)
 USERS_BASENAME = "usuarios.json"    # Usuarios locales
 LOGO_NAME      = "logo.jpg"             # Se guardará como logo.(png|jpg|...)
 
 EXCEL_PATH       = os.path.join(USER_DATA_DIR, DATA_BASENAME)
 EXCEL_EXTRA_PATH = os.path.join(USER_DATA_DIR, EXTRA_BASENAME)
+EXCEL_DIGEMID_PATH = os.path.join(USER_DATA_DIR, DIGEMID_BASENAME)
 USERS_PATH       = os.path.join(USER_DATA_DIR, USERS_BASENAME)
 
 # --------- Columnas ----------
@@ -205,6 +207,27 @@ def ensure_file_from_bundle_or_local(dst_path, basename, empty_df_columns=None):
 def ensure_all_files():
     ensure_file_from_bundle_or_local(EXCEL_PATH, DATA_BASENAME, empty_df_columns=BASE_COLUMNS_STD)
     ensure_file_from_bundle_or_local(EXCEL_EXTRA_PATH, EXTRA_BASENAME, empty_df_columns=BASE_COLUMNS_STD + EXTRA_COLUMNS)
+    # Intentar procesar preciosProductos (1).xlsx como base DIGEMID si existe
+    digemid_source = os.path.join(os.path.abspath("."), "preciosProductos (1).xlsx")
+    if not os.path.exists(EXCEL_DIGEMID_PATH):
+        if os.path.exists(digemid_source):
+            try:
+                # Cargar y normalizar el archivo DIGEMID original
+                df_digemid = load_normalized_digemid(digemid_source)
+                if not df_digemid.empty:
+                    # Guardar el DataFrame normalizado (sin estructura de líneas vacías)
+                    df_digemid.to_excel(EXCEL_DIGEMID_PATH, index=False, engine='openpyxl')
+                    print(f"[INFO] Procesado {digemid_source} como base DIGEMID ({len(df_digemid)} registros)")
+                else:
+                    # Si no se pudo leer, crear archivo vacío
+                    ensure_file_from_bundle_or_local(EXCEL_DIGEMID_PATH, DIGEMID_BASENAME, empty_df_columns=BASE_COLUMNS_STD)
+            except Exception as e:
+                print(f"[WARN] No se pudo procesar archivo DIGEMID: {e}")
+                import traceback
+                print(traceback.format_exc())
+                ensure_file_from_bundle_or_local(EXCEL_DIGEMID_PATH, DIGEMID_BASENAME, empty_df_columns=BASE_COLUMNS_STD)
+        else:
+            ensure_file_from_bundle_or_local(EXCEL_DIGEMID_PATH, DIGEMID_BASENAME, empty_df_columns=BASE_COLUMNS_STD)
     _ensure_users()
 
 def load_file(path):
@@ -213,6 +236,19 @@ def load_file(path):
             return pd.read_csv(path)
         return pd.read_excel(path)
     except Exception:
+        return pd.DataFrame()
+
+def load_digemid_file(path):
+    """Cargar archivo DIGEMID desde la línea 8 (header=7)"""
+    try:
+        if str(path).lower().endswith(".csv"):
+            # Para CSV, leer desde la línea 8 (skiprows=7)
+            return pd.read_csv(path, skiprows=7)
+        else:
+            # Para Excel, leer desde header=7 (línea 8)
+            return pd.read_excel(path, header=7)
+    except Exception as e:
+        print(f"Error loading DIGEMID file: {e}")
         return pd.DataFrame()
 
 def df_to_upper(df: pd.DataFrame) -> pd.DataFrame:
@@ -277,6 +313,87 @@ def normalize_from_main(raw: pd.DataFrame) -> pd.DataFrame:
     out["N° DIGEMID"] = out["CÓDIGO PRODUCTO"]
     return out
 
+def normalize_from_digemid(raw: pd.DataFrame) -> pd.DataFrame:
+    """Normalizar DataFrame de DIGEMID mapeando columnas específicas"""
+    df = raw.copy()
+    lower = {str(c).strip().lower(): c for c in df.columns}
+    
+    def pick(*cands):
+        for c in cands:
+            if c in lower: return lower[c]
+        return None
+    
+    # Mapear columnas DIGEMID a columnas estándar
+    # Columnas del Excel DIGEMID:
+    # - 'Nombre de producto' -> Producto (Marca comercial)
+    # - 'Precio Unit.' -> Precio
+    # - 'Farmacia/Botica' -> Farmacia / Fuente
+    # - 'Fabricante' -> Laboratorio / Fabricante
+    # - 'Titular' -> se puede usar como información adicional
+    
+    nombre_prod = pick("nombre de producto", "nombre producto", "producto", "nombre")
+    precio_unit = pick("precio unit.", "precio unit", "precio", "precio unitario")
+    farmacia_botica = pick("farmacia/botica", "farmacia botica", "farmacia", "botica", "farmacia / fuente")
+    fabricante = pick("fabricante", "laboratorio", "laboratorio / fabricante")
+    titular = pick("titular")
+    departamento = pick("departamento")
+    provincia = pick("provincia")
+    distrito = pick("distrito")
+    direccion = pick("dirección", "direccion")
+    fecha_actualiz = pick("fecha de actualizac.", "fecha de actualizacion", "fecha")
+    tipo = pick("tipo")
+    
+    # Crear DataFrame normalizado
+    out = pd.DataFrame({
+        "CÓDIGO PRODUCTO":           df[nombre_prod] if nombre_prod in df.columns else "",  # Usar nombre como código si no hay otro
+        "Producto (Marca comercial)": df[nombre_prod] if nombre_prod in df.columns else "",
+        "Principio Activo":          "",  # DIGEMID no tiene este campo típicamente
+        "N° DIGEMID":                df[nombre_prod] if nombre_prod in df.columns else "",  # Placeholder
+        "Laboratorio / Fabricante":  df[fabricante] if fabricante in df.columns else "",
+        "Presentación":              "",  # DIGEMID no tiene presentación específica
+        "Precio":                    df[precio_unit] if precio_unit in df.columns else "",
+        "Farmacia / Fuente":         df[farmacia_botica] if farmacia_botica in df.columns else "",
+        "Enlace":                    "",  # No hay enlace en DIGEMID
+    })
+    
+    # Añadir columnas extra con información adicional
+    for ex in EXTRA_COLUMNS:
+        out[ex] = ""
+    
+    # Limpiar valores
+    for c in out.columns:
+        out[c] = out[c].astype(str).replace("nan", "").replace("None", "").str.strip()
+    
+    # Normalizar precio: asegurar formato "S/ X.XX"
+    if "Precio" in out.columns:
+        def normalize_digemid_price(price_str):
+            if not price_str or price_str == "" or price_str == "nan":
+                return ""
+            price_str = str(price_str).strip()
+            # Si ya tiene S/, dejarlo
+            if "S/" in price_str.upper():
+                return price_str
+            # Si es un número, agregar S/
+            try:
+                # Limpiar y convertir a float
+                price_clean = price_str.replace(",", ".").replace("S/", "").replace("s/", "").strip()
+                price_num = float(price_clean)
+                return f"S/ {price_num:.2f}"
+            except (ValueError, AttributeError):
+                # Si no es número, devolver como está
+                return price_str if price_str else ""
+        
+        out["Precio"] = out["Precio"].apply(normalize_digemid_price)
+    
+    # Llenar código con nombre si está vacío
+    out["CÓDIGO PRODUCTO"] = out["CÓDIGO PRODUCTO"].where(
+        out["CÓDIGO PRODUCTO"].astype(str).str.strip() != "", 
+        out["Producto (Marca comercial)"]
+    )
+    out["N° DIGEMID"] = out["CÓDIGO PRODUCTO"]
+    
+    return out
+
 def normalize_from_extra(raw: pd.DataFrame) -> pd.DataFrame:
     df = raw.copy()
     lower = {str(c).strip().lower(): c for c in df.columns}
@@ -320,6 +437,17 @@ def load_normalized(path, which="main") -> pd.DataFrame:
         df_up["Enlace"] = df["Enlace"].astype(str).replace("nan", "")
     return df_up
 
+def load_normalized_digemid(path) -> pd.DataFrame:
+    """Cargar y normalizar archivo DIGEMID específico"""
+    raw = load_digemid_file(path)
+    if raw.empty:
+        return pd.DataFrame(columns=BASE_COLUMNS_STD + EXTRA_COLUMNS)
+    df = normalize_from_digemid(raw)
+    df_up = df_to_upper(df)
+    if "Enlace" in df.columns:
+        df_up["Enlace"] = df["Enlace"].astype(str).replace("nan", "")
+    return df_up
+
 def combo_df():
     ensure_all_files()
     df_main  = load_normalized(EXCEL_PATH, "main")
@@ -352,6 +480,36 @@ def combo_df():
     a = df_main.copy();  a["_ORIGEN"]="BASE"
     b = df_extra.copy(); b["_ORIGEN"]="EXTRA"
     return pd.concat([a, b], ignore_index=True)
+
+def combo_digemid_df():
+    """Cargar y combinar todos los archivos DIGEMID"""
+    ensure_all_files()
+    # Usar función específica para DIGEMID que lee desde la línea 8
+    df_digemid = load_normalized_digemid(EXCEL_DIGEMID_PATH)
+    
+    if df_digemid.empty:
+        return pd.DataFrame(columns=BASE_COLUMNS_STD + EXTRA_COLUMNS)
+    
+    if "CÓDIGO PRODUCTO" not in df_digemid.columns: 
+        df_digemid["CÓDIGO PRODUCTO"] = ""
+    if "N° DIGEMID" not in df_digemid.columns:      
+        df_digemid["N° DIGEMID"] = ""
+    df_digemid["CÓDIGO PRODUCTO"] = df_digemid["CÓDIGO PRODUCTO"].where(
+        df_digemid["CÓDIGO PRODUCTO"].astype(str).str.strip() != "", df_digemid["N° DIGEMID"]
+    )
+    df_digemid["N° DIGEMID"] = df_digemid["CÓDIGO PRODUCTO"]
+    
+    for ex in EXTRA_COLUMNS:
+        if ex not in df_digemid.columns: 
+            df_digemid[ex] = ""
+    
+    if "LABORATORIO PRECIO" not in df_digemid.columns:
+        df_digemid["LABORATORIO PRECIO"] = df_digemid["Laboratorio / Fabricante"]
+    if "Laboratorio Abreviado" not in df_digemid.columns:
+        df_digemid["Laboratorio Abreviado"] = df_digemid["Laboratorio / Fabricante"].apply(lambda x: smart_abbrev(x, 18))
+    
+    df_digemid["_ORIGEN"] = "DIGEMID"
+    return df_digemid
 
 # --------- Scraping ----------
 # User-Agent actualizado para mayor compatibilidad (Chrome 142)
@@ -574,6 +732,33 @@ PERUVIAN_PHARMACIES = [
         ],
         "use_selenium": False,
         "fallback_to_text": True
+    },
+    {
+        "name": "NovaFarma Wimer",
+        "base_url": "https://novafarmawimer.pe",
+        "search_url": "https://novafarmawimer.pe/?s={query}&et_search=true&post_type=product",
+        "price_selectors": [
+            # Selectores específicos para WooCommerce
+            ".woocommerce-Price-amount", "span.woocommerce-Price-amount",
+            ".price", ".amount", "span.price", "span.amount",
+            "[class*='woocommerce-Price']", "[class*='woocommerce-price']",
+            ".product-price", ".price-wrapper", ".price-box",
+            # Selectores genéricos
+            ".precio", "[class*='price']", "[class*='precio']", "[data-price]",
+            "bdi", "span[class*='amount']", ".woocommerce-loop-product__price"
+        ],
+        "product_selectors": [
+            # Selectores específicos para WooCommerce
+            ".woocommerce ul.products li.product",
+            "li.product", "article.product", ".product",
+            ".woocommerce-loop-product__link", ".product-item",
+            ".type-product", "[class*='product']",
+            # Selectores genéricos
+            ".product-wrapper", ".product-box",
+            "div[class*='product']", "article[class*='product']"
+        ],
+        "use_selenium": False,
+        "fallback_to_text": True
     }
 ]
 
@@ -765,7 +950,21 @@ def extract_multiple_products(html: str, base_url: str, pharmacy_info: dict) -> 
                     print(f"    [WARN] Error extracting from container: {cont_error}")
                     continue
         
-        # If still no products found, try to extract from text patterns
+        # Si encontramos muy pocos productos (menos de 3), intentar también extracción por texto
+        # para asegurar que no nos perdemos productos
+        if len(products) < 3:
+            print(f"    [TEXT] Only {len(products)} products found with selectors, trying text extraction to find more...")
+            query = pharmacy_info.get("_current_query", "")
+            text_products = extract_products_from_text(soup.get_text(), base_url, pharmacy_info, query=query)
+            # Combinar productos, evitando duplicados
+            seen_keys = {(p.get("name", "").upper()[:50], p.get("price")) for p in products}
+            for tp in text_products:
+                tp_key = (tp.get("name", "").upper()[:50], tp.get("price"))
+                if tp_key not in seen_keys:
+                    products.append(tp)
+                    seen_keys.add(tp_key)
+        
+        # Si aún no hay productos, intentar extracción por texto como último recurso
         if not products:
             print(f"    [TEXT] No products found with selectors, trying text extraction...")
             query = pharmacy_info.get("_current_query", "")
@@ -965,11 +1164,14 @@ def extract_single_product_from_container(container, base_url: str, pharmacy_inf
     try:
         # Look for price in the container using pharmacy-specific selectors
         price = ""
+        price_text_raw = ""  # Guardar el texto crudo del precio para excluirlo
+        price_elem = None
         price_selectors = pharmacy_info.get("price_selectors", [".price", ".precio", "[class*='price']", "[class*='precio']"]) if pharmacy_info else [".price", ".precio", "[class*='price']", "[class*='precio']"]
         for selector in price_selectors:
             price_elem = container.select_one(selector)
             if price_elem:
-                price = normalize_price(price_elem.get_text().strip())
+                price_text_raw = price_elem.get_text().strip()
+                price = normalize_price(price_text_raw)
                 if price:
                     break
         
@@ -977,51 +1179,328 @@ def extract_single_product_from_container(container, base_url: str, pharmacy_inf
             return {}
         
         # Look for product name with more comprehensive selectors
+        # IMPORTANTE: Buscar el nombre ANTES de buscar en el texto completo para evitar confundirlo con el precio
         product_name = ""
-        name_selectors = [
-            ".product-name", ".product-title", ".item-name", ".nombre", ".title",
-            "h1", "h2", "h3", "h4", "h5", "h6",
-            "a[href]", ".product-link", ".item-link",
-            "[class*='product']", "[class*='item']", "[class*='nombre']",
-            ".name", ".producto", ".medicamento"
-        ]
+        pharmacy_name = pharmacy_info.get("name", "") if pharmacy_info else ""
         
-        for selector in name_selectors:
-            name_elem = container.select_one(selector)
-            if name_elem:
-                name_text = name_elem.get_text().strip()
-                if len(name_text) > 5 and len(name_text) < 150:
-                    # Skip common non-product text
-                    if not any(skip in name_text.lower() for skip in ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'carrito']):
-                        product_name = name_text
+        # 1. Buscar en headings primero (h1-h6)
+        for tag_name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+            headings = container.select(tag_name)
+            for heading in headings:
+                heading_text = heading.get_text().strip()
+                # Excluir si es el precio o contiene solo números/precio
+                if (len(heading_text) > 5 and len(heading_text) < 150 and 
+                    heading_text != price_text_raw and 
+                    not heading_text.startswith("S/") and
+                    not any(skip in heading_text.lower() for skip in ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'carrito', 'precio'])):
+                    product_name = heading_text
+                    break
+            if product_name:
+                break
+        
+        # 2. Buscar en selectores específicos de nombre - MEJORADO
+        if not product_name:
+            # Selectores específicos según la farmacia
+            pharmacy_name = pharmacy_info.get("name", "") if pharmacy_info else ""
+            
+            # Selectores base
+            name_selectors = [
+                ".product-name", ".product-title", ".item-name", ".nombre", ".title",
+                ".product-link", ".item-link",
+                "[class*='product-name']", "[class*='product-title']", "[class*='item-name']",
+                ".name", ".producto", ".medicamento"
+            ]
+            
+            # Selectores ESPECÍFICOS para Farmacias Lider - más agresivos
+            if "Lider" in pharmacy_name:
+                name_selectors = [
+                    # Headings primero
+                    "h1", "h2", "h3", "h4", "h5", "h6",
+                    # Links con texto
+                    "a[href]", "a.product-link", "a[href*='product']",
+                    # Elementos con clases comunes
+                    ".product-title", ".product-name", ".title", ".name",
+                    "[class*='title']", "[class*='name']", "[class*='product']",
+                    # Spans y divs con texto
+                    "span.title", "div.title", "span.name", "div.name",
+                    # Cualquier elemento con texto antes del precio
+                    "strong", "b", "p"
+                ] + name_selectors
+            
+            for selector in name_selectors:
+                try:
+                    # Buscar TODOS los elementos que coincidan, no solo el primero
+                    name_elems = container.select(selector)
+                    for name_elem in name_elems:
+                        # Verificar que no sea el elemento del precio
+                        if name_elem == price_elem:
+                            continue
+                        # Verificar que no contenga el precio
+                        if price_elem and (name_elem == price_elem or price_elem in name_elem.descendants):
+                            continue
+                        
+                        name_text = name_elem.get_text().strip()
+                        # Validar el texto
+                        if (len(name_text) > 5 and len(name_text) < 200 and 
+                            name_text != price_text_raw and
+                            not name_text.startswith("S/") and
+                            price_text_raw not in name_text and
+                            not re.match(r'^[\d\s.,]+$', name_text) and  # No solo números
+                            not any(skip in name_text.lower() for skip in ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'carrito', 'precio', 'soles', 'cantidad', 'añadir'])):
+                            product_name = name_text
+                            break
+                    if product_name:
                         break
-        # Try title/alt attributes if still no name
+                except Exception:
+                    continue
+        
+        # 3. Buscar en links de manera más agresiva - MEJORADO
         if not product_name:
             try:
-                link = container.select_one("a[href]")
-                if link:
-                    for attr in ("title", "aria-label", "alt"):
+                links = container.select("a[href]")
+                for link in links:
+                    # Verificar que el link no sea el precio
+                    if link == price_elem or (price_elem and price_elem in link.descendants):
+                        continue
+                    
+                    # Primero intentar atributos (title, aria-label, alt)
+                    for attr in ("title", "aria-label", "alt", "data-title"):
                         t = (link.get(attr) or "").strip()
-                        if 5 < len(t) < 150 and not any(w in t.lower() for w in ['agregar','comprar','carrito']):
+                        if (len(t) > 5 and len(t) < 200 and 
+                            t != price_text_raw and
+                            not t.startswith("S/") and
+                            price_text_raw not in t and
+                            not re.match(r'^[\d\s.,]+$', t) and
+                            not any(w in t.lower() for w in ['agregar','comprar','carrito','precio','soles','ver más'])):
                             product_name = t
                             break
+                    if product_name:
+                        break
+                    
+                    # Si no hay atributos, usar el texto del link (pero solo si tiene texto significativo)
+                    link_text = link.get_text().strip()
+                    if (len(link_text) > 8 and len(link_text) < 200 and
+                        link_text != price_text_raw and
+                        not link_text.startswith("S/") and
+                        price_text_raw not in link_text and
+                        not re.match(r'^[\d\s.,]+$', link_text) and
+                        not any(skip in link_text.lower() for skip in ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'carrito', 'precio', 'soles', 'click', 'button'])):
+                        product_name = link_text
+                        break
             except Exception:
                 pass
         
-        # If still no name, try to extract from the container's text
+        # 4. Búsqueda DIRECTA en el texto del contenedor - MEJORADA para Farmacias Lider
         if not product_name:
-            container_text = container.get_text().strip()
-            lines = [line.strip() for line in container_text.split('\n') if line.strip()]
-            for line in lines:
-                if len(line) > 5 and len(line) < 150 and line != price:
-                    if not any(skip in line.lower() for skip in ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'carrito']):
+            # Estrategia: obtener todo el texto y buscar la primera línea válida ANTES del precio
+            container_text_full = container.get_text(separator='\n', strip=True)
+            
+            # Si encontramos el precio, tomar solo el texto ANTES del precio
+            if price_text_raw and price_text_raw in container_text_full:
+                # Dividir por el precio y tomar la primera parte
+                parts = container_text_full.split(price_text_raw, 1)
+                if len(parts) > 0:
+                    container_text_before_price = parts[0]
+                else:
+                    container_text_before_price = container_text_full
+            else:
+                container_text_before_price = container_text_full
+            
+            # Limpiar el texto
+            container_text_before_price = re.sub(r'S/\.?\s*\d+[.,]?\d*', '', container_text_before_price)
+            container_text_before_price = re.sub(r'\d+[.,]\d+\s*soles?', '', container_text_before_price, flags=re.IGNORECASE)
+            
+            # Dividir en líneas y buscar la mejor
+            lines_before_price = [line.strip() for line in container_text_before_price.split('\n') if line.strip()]
+            
+            # Priorizar líneas que parezcan nombres de productos
+            for line in lines_before_price:
+                if (len(line) > 8 and len(line) < 200 and
+                    not line.startswith("S/") and
+                    not re.match(r'^[\d\s.,]+$', line) and
+                    not any(skip in line.lower() for skip in ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'carrito', 'precio', 'soles', 'cantidad', 'añadir', 'click', 'button', 'seleccionar', 'opciones', 'leer más'])):
+                    # Si la línea tiene características de nombre de producto, usarla
+                    has_letters = bool(re.search(r'[A-Za-zÁÉÍÓÚáéíóú]', line))
+                    has_reasonable_length = 10 <= len(line) <= 150
+                    not_mostly_numbers = len(re.findall(r'\d', line)) < len(line) * 0.3
+                    
+                    if has_letters and has_reasonable_length and not_mostly_numbers:
                         product_name = line
                         break
+            
+            # Si aún no encontramos nada, buscar en todos los elementos del contenedor
+            if not product_name:
+                all_elements = []
+                for tag in container.find_all(['span', 'div', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'strong', 'b']):
+                    if tag == price_elem:
+                        continue
+                    tag_text = tag.get_text().strip()
+                    if (tag_text and len(tag_text) > 8 and len(tag_text) < 200 and
+                        tag_text != price_text_raw and
+                        not tag_text.startswith("S/") and
+                        price_text_raw not in tag_text):
+                        all_elements.append((tag, tag_text))
+                
+                # Evaluar cada elemento candidato
+                best_candidate = None
+                best_score = -1
+                
+                for elem, tag_text in all_elements:
+                    if (not re.match(r'^[\d\s.,]+$', tag_text) and
+                        not any(skip in tag_text.lower() for skip in ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'carrito', 'precio', 'soles', 'cantidad', 'añadir', 'click', 'button'])):
+                        
+                        score = 0
+                        if elem and elem.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                            score += 5
+                        if elem and elem.name == 'a':
+                            score += 3
+                        if any(c.isupper() for c in tag_text):
+                            score += 2
+                        if len(tag_text) > 15:
+                            score += 1
+                        if not re.search(r'\d{4,}', tag_text):
+                            score += 1
+                        
+                        if score > best_score:
+                            best_score = score
+                            best_candidate = tag_text
+                
+                if best_candidate:
+                    product_name = best_candidate
         
-        # Clean up product name
+        # 5. Si aún no hay nombre, buscar en TODOS los elementos del contenedor de manera más agresiva
+        if not product_name:
+            # Obtener todos los elementos de texto del contenedor
+            all_text_elements = []
+            
+            # Buscar en todos los elementos visibles
+            for elem in container.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'span', 'div', 'p', 'strong', 'b']):
+                if elem == price_elem:
+                    continue
+                # Verificar que el elemento no contenga el precio
+                elem_text = elem.get_text().strip()
+                if (elem_text and 
+                    len(elem_text) > 5 and len(elem_text) < 200 and
+                    elem_text != price_text_raw and
+                    not elem_text.startswith("S/") and
+                    price_text_raw not in elem_text and
+                    not re.match(r'^[\d\s.,]+$', elem_text) and
+                    not any(skip in elem_text.lower() for skip in ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'carrito', 'precio', 'soles', 'cantidad', 'añadir', 'click', 'button', 'seleccionar'])):
+                    all_text_elements.append((elem, elem_text))
+            
+            # Si no encontramos nada, buscar en el texto plano del contenedor
+            if not all_text_elements:
+                container_text = container.get_text(separator='\n', strip=True)
+                # Remover el precio
+                if price_text_raw:
+                    container_text = container_text.replace(price_text_raw, "")
+                if price:
+                    container_text = container_text.replace(price, "")
+                container_text = re.sub(r'S/\.?\s*\d+[.,]?\d*', '', container_text)
+                
+                lines = [line.strip() for line in container_text.split('\n') if line.strip()]
+                for line in lines:
+                    if (len(line) > 5 and len(line) < 200 and
+                        not line.startswith("S/") and
+                        not re.match(r'^[\d\s.,]+$', line) and
+                        not any(skip in line.lower() for skip in ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'carrito', 'precio', 'soles', 'cantidad', 'añadir', 'click', 'button'])):
+                        all_text_elements.append((None, line))
+            
+            # Evaluar y seleccionar el mejor candidato
+            if all_text_elements:
+                best_candidate = None
+                best_score = -1
+                
+                for elem, text in all_text_elements:
+                    score = 0
+                    # Preferir headings
+                    if elem and elem.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                        score += 5
+                    # Preferir links
+                    elif elem and elem.name == 'a':
+                        score += 4
+                    # Preferir texto con mayúsculas
+                    if any(c.isupper() for c in text):
+                        score += 2
+                    # Preferir texto más largo
+                    if len(text) > 15:
+                        score += 1
+                    # Penalizar números
+                    if not re.search(r'\d{4,}', text):
+                        score += 1
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_candidate = text
+                
+                if best_candidate:
+                    product_name = best_candidate
+        
+        # 6. Búsqueda por texto plano - MEJORADA: tomar TODAS las líneas y elegir la mejor
+        if not product_name:
+            container_text = container.get_text(separator='\n', strip=True)
+            # Remover el precio de todas las formas posibles
+            if price_text_raw:
+                container_text = container_text.replace(price_text_raw, "")
+            if price:
+                container_text = container_text.replace(price, "")
+            container_text = re.sub(r'S/\.?\s*\d+[.,]?\d*', '', container_text)
+            container_text = re.sub(r'\d+[.,]\d+\s*soles?', '', container_text, flags=re.IGNORECASE)
+            
+            lines = [line.strip() for line in container_text.split('\n') if line.strip()]
+            
+            # Evaluar todas las líneas y elegir la mejor
+            candidates = []
+            for line in lines:
+                if (len(line) > 8 and len(line) < 200 and
+                    not line.startswith("S/") and
+                    not re.match(r'^[\d\s.,]+$', line) and
+                    not any(skip in line.lower() for skip in ['agregar', 'comprar', 'ver', 'más', 'menos', 'stock', 'disponible', 'carrito', 'precio', 'soles', 'cantidad', 'añadir', 'click', 'button', 'seleccionar', 'opciones'])):
+                    # Calcular score
+                    score = 0
+                    if any(c.isupper() for c in line):  # Tiene mayúsculas
+                        score += 2
+                    if len(line) > 15:  # Es largo
+                        score += 1
+                    if not re.search(r'\d{3,}', line):  # No tiene muchos números
+                        score += 1
+                    if re.search(r'[A-ZÁÉÍÓÚÑ]', line):  # Tiene letras mayúsculas
+                        score += 1
+                    candidates.append((score, line))
+            
+            # Ordenar por score y tomar el mejor
+            if candidates:
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                product_name = candidates[0][1]
+        
+        # Clean up product name - remover cualquier rastro de precio
         if product_name:
+            # Remover cualquier patrón de precio que pueda haber quedado
+            product_name = re.sub(r'S/\.?\s*\d+[.,]?\d*', '', product_name)
             product_name = re.sub(r'\s+', ' ', product_name)  # Remove extra spaces
             product_name = product_name.strip()
+            # Asegurar que no sea solo el precio
+            if product_name.startswith("S/") or re.match(r'^[\d\s.,]+$', product_name):
+                product_name = ""
+        
+        # Si después de todo no hay nombre, intentar usar el query como último recurso
+        # pero solo si realmente no encontramos nada
+        if not product_name:
+            query = pharmacy_info.get("_current_query", "") if pharmacy_info else ""
+            if query and len(query) > 3:
+                # Usar el query pero añadir un indicador de que es genérico
+                product_name = f"{query.upper()} (Producto)"
+            else:
+                product_name = "Producto"
+        
+        # Debug: imprimir si no encontramos nombre específico
+        if product_name == "Producto" or "(Producto)" in product_name:
+            print(f"    [DEBUG] No se encontró nombre específico para producto con precio {price}")
+            if price_elem:
+                print(f"    [DEBUG] Elemento precio encontrado: {price_elem.name} - {price_text_raw[:50]}")
+            # Imprimir primeros 200 caracteres del contenedor para debugging
+            container_preview = container.get_text(separator=' ', strip=True)[:200]
+            print(f"    [DEBUG] Contenedor preview: {container_preview}")
         
         # Look for product URL
         product_url = base_url
@@ -1036,11 +1515,14 @@ def extract_single_product_from_container(container, base_url: str, pharmacy_inf
                     product_url = urljoin(base_url, href)
         
         return {
-            "name": product_name or "Producto",
+            "name": product_name,
             "price": price,
             "url": product_url
         }
-    except Exception:
+    except Exception as e:
+        print(f"    [WARN] Error in extract_single_product_from_container: {e}")
+        import traceback
+        print(traceback.format_exc())
         return {}
 
 def extract_product_info(html: str, url: str) -> dict:
@@ -1293,42 +1775,76 @@ def search_pharmacy_direct(query: str, pharmacy_info: dict, timeout=8) -> list:
                 used_js = bool(rendered_html) and (len(rendered_html) >= len(r.text))
                 html_to_use = rendered_html if used_js else r.text
                 products = extract_multiple_products(html_to_use, search_url, pharmacy_info)
-                # Si con selectores no se obtuvo nada, usar el texto plano renderizado
-                if not products and (rendered_text and len(rendered_text) > 200):
-                    print("    [TEXT] No products via selectors. Trying rendered text extraction…")
+                # Si con selectores no se obtuvo nada o muy pocos productos, usar el texto plano renderizado
+                if (not products or len(products) < 3) and (rendered_text and len(rendered_text) > 200):
+                    print(f"    [TEXT] Only {len(products)} products via selectors. Trying rendered text extraction…")
                     pharmacy_info["_current_query"] = query
-                    products = extract_products_from_text(rendered_text, search_url, pharmacy_info, query=query)
+                    text_products = extract_products_from_text(rendered_text, search_url, pharmacy_info, query=query)
+                    # Combinar productos, evitando duplicados
+                    if text_products:
+                        seen_keys = {(p.get("name", "").upper()[:50], p.get("price")) for p in products}
+                        for tp in text_products:
+                            tp_key = (tp.get("name", "").upper()[:50], tp.get("price"))
+                            if tp_key not in seen_keys:
+                                products.append(tp)
+                                seen_keys.add(tp_key)
             else:
                 # Sitios sin JS: extracción normal
                 used_js = False
                 pharmacy_info["_current_query"] = query
                 products = extract_multiple_products(r.text, search_url, pharmacy_info)
-                # Si no se encontraron productos y está habilitado fallback_to_text, intentar extracción de texto
-                if not products and pharmacy_info.get("fallback_to_text", False):
-                    print("    [TEXT] No products found with selectors, trying text extraction as fallback...")
+                # Si no se encontraron productos o hay muy pocos, intentar extracción de texto
+                # (ahora más agresivo: siempre intentar si hay menos de 3 productos)
+                if len(products) < 3:
+                    print(f"    [TEXT] Only {len(products)} products found with selectors, trying text extraction as fallback...")
                     try:
                         from bs4 import BeautifulSoup
                         soup_fallback = BeautifulSoup(r.text, "lxml")
                         text_fallback = soup_fallback.get_text()
                     except Exception:
                         text_fallback = r.text
-                    products = extract_products_from_text(text_fallback, search_url, pharmacy_info, query=query)
+                    text_products = extract_products_from_text(text_fallback, search_url, pharmacy_info, query=query)
+                    # Combinar productos, evitando duplicados
+                    if text_products:
+                        seen_keys = {(p.get("name", "").upper()[:50], p.get("price")) for p in products}
+                        for tp in text_products:
+                            tp_key = (tp.get("name", "").upper()[:50], tp.get("price"))
+                            if tp_key not in seen_keys:
+                                products.append(tp)
+                                seen_keys.add(tp_key)
             # Procesar productos encontrados (tanto con JS como sin JS)
-            for product in products:
+            print(f"    [DEBUG] {pharmacy_info['name']}: Found {len(products)} products before processing")
+            for idx, product in enumerate(products):
                 try:
+                    # Debug: imprimir información del producto
+                    product_price = product.get("price") if product and isinstance(product, dict) else None
+                    product_name = product.get("name") if product and isinstance(product, dict) else None
+                    print(f"    [DEBUG] {pharmacy_info['name']}: Product {idx+1}/{len(products)} - name: '{product_name}', price: '{product_price}', type: {type(product_price)}")
+                    
                     if product and isinstance(product, dict) and product.get("price"):
-                        results.append({
-                            "Producto (Marca comercial)": product.get("name", query.upper()),
-                            "Precio": product["price"],
-                            "Farmacia / Fuente": pharmacy_info["name"],
-                            "Enlace": product.get("url", search_url),
-                            "_ORIGEN": ("WEB_JS" if (use_selenium and used_js) else "WEB")
-                        })
+                        # Verificar que el precio no esté vacío
+                        price_str = str(product["price"]).strip()
+                        if price_str and price_str != "" and price_str.lower() != "nan":
+                            results.append({
+                                "Producto (Marca comercial)": product.get("name", query.upper()),
+                                "Precio": product["price"],
+                                "Farmacia / Fuente": pharmacy_info["name"],
+                                "Enlace": product.get("url", search_url),
+                                "_ORIGEN": ("WEB_JS" if (use_selenium and used_js) else "WEB")
+                            })
+                            print(f"    [OK] {pharmacy_info['name']}: Added product '{product.get('name', query.upper())[:50]}' with price '{product['price']}'")
+                        else:
+                            print(f"    [WARN] {pharmacy_info['name']}: Product {idx+1} skipped - price is empty/invalid: '{price_str}'")
+                    else:
+                        print(f"    [WARN] {pharmacy_info['name']}: Product {idx+1} skipped - invalid product structure or missing price")
+                        if product:
+                            print(f"    [WARN] {pharmacy_info['name']}: Product keys: {list(product.keys()) if isinstance(product, dict) else 'not a dict'}")
                 except Exception as pe:
-                    print(f"    [WARN] Error processing product: {pe}")
+                    print(f"    [WARN] {pharmacy_info['name']}: Error processing product {idx+1}: {pe}")
                     import traceback
                     print(traceback.format_exc())
                     continue
+            print(f"    [DEBUG] {pharmacy_info['name']}: Total results after processing: {len(results)}")
         else:
             print(f"    [ERROR] {pharmacy_info['name']}: HTTP {r.status_code}")
     except Exception as e:
@@ -1416,17 +1932,32 @@ def fetch_prices_online(query: str, selected_pharmacies: list = None, max_sites:
         print(f"  [{i}/{len(pharmacies_to_search)}] Searching {pharmacy_info['name']}...")
         try:
             results = search_pharmacy_direct(query, pharmacy_info, timeout=timeout)
-            for result in results:
+            print(f"    [DEBUG] {pharmacy_info['name']}: search_pharmacy_direct returned {len(results)} results")
+            for idx, result in enumerate(results):
                 try:
-                    key = (result.get("Farmacia / Fuente", ""), result.get("Precio", ""), result.get("Enlace", ""))
-                    if key not in seen and result.get("Precio"):
+                    precio = result.get("Precio", "")
+                    producto = result.get("Producto (Marca comercial)", "")
+                    farmacia = result.get("Farmacia / Fuente", "")
+                    enlace = result.get("Enlace", "")
+                    key = (farmacia, precio, enlace)
+                    
+                    print(f"    [DEBUG] {pharmacy_info['name']}: Result {idx+1}/{len(results)} - precio: '{precio}', producto: '{producto[:50]}', key: {key}")
+                    
+                    if key not in seen and precio:
                         seen.add(key)
                         out.append(result)
-                        print(f"    [OK] Found: {result.get('Precio', 'N/A')} - {result.get('Producto (Marca comercial)', 'N/A')} at {result.get('Farmacia / Fuente', 'N/A')}")
+                        print(f"    [OK] Found: {precio} - {producto[:50]} at {farmacia}")
                         if len(out) >= max_sites:  # Stop if we have enough results
                             break
+                    else:
+                        if key in seen:
+                            print(f"    [DEBUG] {pharmacy_info['name']}: Result {idx+1} skipped - duplicate key")
+                        elif not precio:
+                            print(f"    [WARN] {pharmacy_info['name']}: Result {idx+1} skipped - empty/invalid precio: '{precio}'")
                 except Exception as result_error:
                     print(f"    [WARN] Error processing result from {pharmacy_info['name']}: {result_error}")
+                    import traceback
+                    print(traceback.format_exc())
                     continue
             if len(out) >= max_sites:
                 break
@@ -1506,8 +2037,10 @@ def get_state():
     if "state" not in session:
         session["state"] = {
             "rows": [],
+            "digemid_rows": [],
             "filters": {"pharmacies": []},
             "sort": {"col":"Precio","asc":True},
+            "digemid_sort": {"col":"Precio","asc":True},
         }
     return session["state"]
 
@@ -1535,6 +2068,13 @@ def home():
     if "user" not in session:
         return redirect(url_for("login"))
     return _html_home()
+
+@app.route("/digemid")
+def digemid():
+    """Página de búsqueda DIGEMID"""
+    if "user" not in session:
+        return redirect(url_for("login"))
+    return _html_digemid()
 
 @app.route("/static/logo")
 def static_logo():
@@ -1764,6 +2304,163 @@ def api_export():
     fname = f"medicamentos_{datetime.datetime.now():%Y%m%d_%H%M%S}.csv"
     return send_file(bio, as_attachment=True, download_name=fname, mimetype="text/csv; charset=utf-8")
 
+# --------- API: Búsqueda DIGEMID ----------
+@app.route("/api/digemid/search")
+def api_digemid_search():
+    """Busca en la base DIGEMID"""
+    if "user" not in session: 
+        return jsonify({"error":"unauth"}), 401
+    
+    q = (request.args.get("q") or "").strip()
+    scope = (request.args.get("scope") or "PRODUCTO").upper()  # PRODUCTO | PRINCIPIO ACTIVO | AMBOS
+    
+    if not q:
+        return jsonify({
+            "rows":[], 
+            "digemid_last": last_modified_text(EXCEL_DIGEMID_PATH)
+        })
+    
+    rows = []
+    try:
+        df = combo_digemid_df()
+        if not df.empty:
+            qU = q.upper()
+            if scope == "PRODUCTO":
+                mask = df["Producto (Marca comercial)"].astype(str).str.contains(qU, regex=False, na=False)
+            elif scope == "PRINCIPIO ACTIVO":
+                mask = df["Principio Activo"].astype(str).str.contains(qU, regex=False, na=False)
+            else: # AMBOS
+                mask = (df["Producto (Marca comercial)"].astype(str).str.contains(qU, regex=False, na=False) | 
+                       df["Principio Activo"].astype(str).str.contains(qU, regex=False, na=False))
+            
+            df_filtered = df[mask]
+            for _, r in df_filtered.iterrows():
+                rows.append({
+                    "CÓDIGO PRODUCTO":        r.get("CÓDIGO PRODUCTO",""),
+                    "Producto (Marca comercial)": r.get("Producto (Marca comercial)",""),
+                    "Principio Activo":       r.get("Principio Activo",""),
+                    "N° DIGEMID":             r.get("N° DIGEMID",""),
+                    "Laboratorio / Fabricante": r.get("Laboratorio / Fabricante",""),
+                    "Presentación":           r.get("Presentación",""),
+                    "Precio":                 r.get("Precio",""),
+                    "Farmacia / Fuente":      r.get("Farmacia / Fuente",""),
+                    "Enlace":                 r.get("Enlace",""),
+                    "GRUPO":                  r.get("GRUPO",""),
+                    "Laboratorio Abreviado":  r.get("Laboratorio Abreviado",""),
+                    "LABORATORIO PRECIO":     r.get("LABORATORIO PRECIO",""),
+                    "_ORIGEN":                r.get("_ORIGEN","DIGEMID"),
+                })
+    except Exception as e:
+        print(f"Error in DIGEMID search: {e}")
+    
+    # Guardar en sesión
+    st = get_state()
+    st["digemid_rows"] = rows
+    st["digemid_sort"] = {"col":"Precio","asc":True}
+    session.modified = True
+    
+    return jsonify({
+        "rows": rows,
+        "digemid_last": last_modified_text(EXCEL_DIGEMID_PATH)
+    })
+
+@app.route("/api/digemid/view")
+def api_digemid_view():
+    """Vista paginada de resultados DIGEMID"""
+    if "user" not in session: 
+        return jsonify({"error":"unauth"}), 401
+    
+    st = get_state()
+    # Si no hay filas en el estado, usar las de la búsqueda reciente
+    if "digemid_rows" not in st:
+        st["digemid_rows"] = []
+    rows = list(st["digemid_rows"])
+    
+    # sort
+    col = request.args.get("sort_col", "Precio")
+    asc = request.args.get("sort_asc","true").lower() == "true"
+    rows = sort_rows(rows, col, asc)
+    
+    # paginación
+    page = max(1, int(request.args.get("page", 1)))
+    per  = max(5, min(100, int(request.args.get("per", 25))))
+    total = len(rows)
+    pages = max(1, (total + per - 1)//per)
+    if page > pages: page = pages
+    start = (page-1)*per
+    end   = min(start+per, total)
+    rows_page = rows[start:end]
+    
+    # min/max
+    def minmax(all_rows):
+        vals = [(extract_price_number(r.get("Precio","")), r) for r in all_rows]
+        vals = [(v,r) for (v,r) in vals if v is not None]
+        if not vals: return None, None
+        rmin = min(vals, key=lambda x:x[0])[1]
+        rmax = max(vals, key=lambda x:x[0])[1]
+        return rmin, rmax
+    
+    rmin, rmax = minmax(rows)
+    
+    return jsonify({
+        "rows": rows_page,
+        "total": total,
+        "page": page,
+        "pages": pages,
+        "per": per,
+        "sort": {"col": col, "asc": asc},
+        "min_item": rmin,
+        "max_item": rmax
+    })
+
+@app.route("/api/digemid/export")
+def api_digemid_export():
+    """Exportar resultados DIGEMID"""
+    if "user" not in session: 
+        return jsonify({"error":"unauth"}), 401
+    
+    st = get_state()
+    rows = list(st.get("digemid_rows", []))
+    col = request.args.get("sort_col", "Precio")
+    asc = request.args.get("sort_asc","true").lower() == "true"
+    rows = sort_rows(rows, col, asc)
+    
+    if not rows:
+        return jsonify({"error":"no_data"}), 400
+    
+    cols = [c for c in DEFAULT_UI_ORDER if any(c in r for r in rows)]
+    df = pd.DataFrame(rows, columns=cols)
+    
+    fmt = request.args.get("fmt","csv").lower()
+    if fmt == "xlsx":
+        bio = io.BytesIO()
+        with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+            df.to_excel(writer, index=False, sheet_name="DIGEMID")
+            wb  = writer.book
+            ws  = writer.sheets["DIGEMID"]
+            header_fmt = wb.add_format({"bold": True, "bg_color": "#E6E6E6", "border":1})
+            cell_fmt   = wb.add_format({"border":1})
+            money_fmt  = wb.add_format({"border":1, "num_format": '"S/" #,##0.00'})
+            for colx, colname in enumerate(df.columns):
+                ws.write(0, colx, colname.upper(), header_fmt)
+            for rowx in range(len(df)):
+                for colx, colname in enumerate(df.columns):
+                    val = df.iloc[rowx, colx]
+                    fmt_cell = money_fmt if colname == "Precio" else cell_fmt
+                    ws.write(rowx+1, colx, val, fmt_cell)
+            for colx, colname in enumerate(df.columns):
+                width = max(12, min(45, int(df[colname].astype(str).str.len().clip(upper=80).max() + 4)))
+                ws.set_column(colx, colx, width)
+        bio.seek(0)
+        fname = f"digemid_{datetime.datetime.now():%Y%m%d_%H%M%S}.xlsx"
+        return send_file(bio, as_attachment=True, download_name=fname,
+                         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    
+    csv_bytes = df.to_csv(index=False).encode("utf-8-sig")
+    bio = io.BytesIO(csv_bytes)
+    fname = f"digemid_{datetime.datetime.now():%Y%m%d_%H%M%S}.csv"
+    return send_file(bio, as_attachment=True, download_name=fname, mimetype="text/csv; charset=utf-8")
+
 # --------- Administración (solo admin) ----------
 @app.route("/api/admin/upload_base", methods=["POST"])
 def api_admin_upload_base():
@@ -1797,6 +2494,62 @@ def api_admin_upload_logo():
         return jsonify({"ok":True, "path":dst})
     except Exception as e:
         return jsonify({"error":str(e)}), 400
+
+@app.route("/api/admin/upload_digemid", methods=["POST"])
+def api_admin_upload_digemid():
+    """Subir archivo DIGEMID y agregarlo a la base (suma fuentes)"""
+    if "user" not in session: return jsonify({"error":"unauth"}), 401
+    if session["user"].get("role") != "admin": return jsonify({"error":"forbidden"}), 403
+    f = request.files.get("file")
+    if not f: return jsonify({"error":"no_file"}), 400
+    
+    # Guardar temporalmente el archivo
+    import tempfile
+    import os
+    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(f.filename)[1]) as tmp_file:
+        f.save(tmp_file.name)
+        tmp_path = tmp_file.name
+    
+    try:
+        # Leer y normalizar el nuevo archivo usando función DIGEMID
+        df_new = load_normalized_digemid(tmp_path)
+        
+        if df_new.empty:
+            return jsonify({"error":"El archivo no contiene datos válidos o no se pudo leer correctamente"}), 400
+        
+        # Cargar la base DIGEMID existente
+        df_existing = load_normalized_digemid(EXCEL_DIGEMID_PATH)
+        
+        # Si no hay datos existentes, inicializar con columnas
+        if df_existing.empty:
+            df_existing = pd.DataFrame(columns=BASE_COLUMNS_STD + EXTRA_COLUMNS)
+        
+        # Combinar (concatenar) los nuevos datos con los existentes
+        df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+        
+        # Eliminar duplicados basados en producto, precio y farmacia
+        df_combined = df_combined.drop_duplicates(
+            subset=["Producto (Marca comercial)", "Precio", "Farmacia / Fuente"], 
+            keep="first"
+        )
+        
+        # Guardar usando openpyxl directamente (no usar load_digemid_file que lee desde línea 8)
+        # Cuando guardamos, guardamos el DataFrame normalizado completo
+        df_combined.to_excel(EXCEL_DIGEMID_PATH, index=False, engine='openpyxl')
+        
+        return jsonify({"ok":True, "message":f"Archivo agregado. Total registros: {len(df_combined)}"})
+    except Exception as e:
+        import traceback
+        print(f"Error uploading DIGEMID file: {e}")
+        print(traceback.format_exc())
+        return jsonify({"error":str(e)}), 500
+    finally:
+        # Limpiar archivo temporal
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except:
+            pass
 
 # --------- CRUD Operations (solo admin) ----------
 @app.route("/api/admin/add_row", methods=["POST"])
@@ -2316,6 +3069,9 @@ tr:hover {{ background: rgba(255,255,255,0.05); }}
       <button id="btnCsv">Exportar CSV</button>
       <button id="btnXlsx">Exportar XLSX</button>
     </div>
+    <div class="pill">
+      <a href="{url_for('digemid')}" style="background:var(--acc); color:#082019; border:none; padding:8px 12px; border-radius:12px; font-weight:700; cursor:pointer; text-decoration:none; display:inline-block;">🔍 Búsqueda DIGEMID</a>
+    </div>
     {f'''
     <div class="pill" id="crudButtons" style="display:none;">
       <button id="btnAdd">➕ Agregar</button>
@@ -2362,6 +3118,326 @@ tr:hover {{ background: rgba(255,255,255,0.05); }}
   <footer>Hecho con ♥ · A&V · Copyright ©Relexner v {APP_VERSION}</footer>
 
 <script src="/static/app.js"></script>
+</body>
+</html>"""
+
+def _html_digemid():
+    """Página HTML para búsqueda DIGEMID"""
+    user = session.get("user",{})
+    role = user.get("role","consulta")
+    digemid_last = last_modified_text(EXCEL_DIGEMID_PATH)
+    
+    admin_panel = f"""
+    <details class="admin">
+      <summary>⚙️ Panel Admin - DIGEMID</summary>
+      <div class="admin-grid">
+        <div>
+          <h4>Añadir Fuente DIGEMID</h4>
+          <p style="color:var(--muted); font-size:12px; margin:4px 0;">Sube archivos Excel/CSV del mismo formato para agregar más fuentes de conocimiento</p>
+          <form id="formDigemid" enctype="multipart/form-data">
+            <input type="file" name="file" accept=".xlsx,.xls,.csv" required>
+            <button type="submit">➕ Añadir Fuente</button>
+          </form>
+        </div>
+      </div>
+      <small class="muted">Última modificación: {digemid_last}</small>
+    </details>
+    """ if role=="admin" else ""
+    
+    return f"""<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Búsqueda DIGEMID · {APP_TITLE}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root {{ --bg:#0e2a47; --panel:#0b1726; --muted:#8aa0b8; --acc:#1dd1a1; --txt:#eaf2fb; --line:#17263a; --chip:#102136; }}
+html,body {{ margin:0; height:100%; background:linear-gradient(180deg, #0e2a47, #0d1f37); color:var(--txt); font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial; }}
+.topbar {{
+  display:flex; align-items:center; gap:12px; padding:12px 16px; border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+}}
+.brand {{ font-weight:800; letter-spacing:.3px }}
+.version {{ color:var(--muted); font-size:12px; margin-left:auto; }}
+.topbar img {{ height:40px; border-radius:8px; background:#fff; padding:4px; }}
+button, select {{ background:var(--acc); color:#082019; border:none; padding:8px 12px; border-radius:12px; font-weight:700; cursor:pointer; }}
+select, input[type=number] {{ color:#0c2238; }}
+input[type=text] {{
+  width:36ch; max-width:70vw; padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,0.14);
+  background:var(--panel); color:var(--txt);
+}}
+.controls {{ display:flex; flex-wrap:wrap; gap:8px; padding:10px 16px; align-items:center; border-bottom:1px solid var(--line); }}
+.controls .pill {{ background:var(--chip); border:1px solid var(--line); padding:8px 10px; border-radius:12px; display:flex; gap:8px; align-items:center; }}
+main {{ padding:12px 16px; }}
+.grid {{ display:grid; grid-template-columns: 1fr; gap:12px; }}
+.table-wrap {{ background:rgba(3,12,22,.55); border:1px solid var(--line); border-radius:14px; overflow:auto; }}
+table {{ width:100%; border-collapse:collapse; min-width:960px; }}
+th, td {{ padding:10px 12px; border-bottom:1px solid #12243a; text-align:left; }}
+th {{ position:sticky; top:0; background:#0c1b2f; z-index:1; cursor:pointer; }}
+td.price {{ text-align:right; white-space:nowrap; }}
+.rowlink a {{ color:#9aeed8; text-decoration:none; }}
+.meta {{ display:flex; gap:12px; align-items:center; flex-wrap:wrap; }}
+.kpi {{ padding:8px 10px; background:var(--chip); border:1px solid var(--line); border-radius:12px; }}
+footer {{ color:var(--muted); font-size:12px; text-align:center; padding:18px; }}
+.muted {{ color:var(--muted); }}
+details.admin {{ background:rgba(3,12,22,.4); border:1px solid var(--line); border-radius:12px; margin:10px 16px; padding:10px; }}
+details.admin summary {{ cursor:pointer; font-weight:700; }}
+.admin-grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:14px; margin-top:8px; }}
+.admin-grid h4 {{ margin:.4rem 0 .6rem; }}
+.admin-grid input[type=file] {{ display:block; margin:.4rem 0; }}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <img src="/static/logo" alt="Logo">
+    <div class="brand">AVision</div>
+    <div style="opacity:.7">|</div>
+    <div>Búsqueda DIGEMID</div>
+    <div class="version">v {APP_VERSION}</div>
+    <div style="margin-left:auto; display:flex; gap:10px; align-items:center;">
+      <a href="{url_for('home')}" style="color:#9aeed8; text-decoration:none;">← Volver</a>
+      <span style="color:var(--muted); font-size:13px;">{user.get("username")} · {user.get("role")}</span>
+      <a href="{url_for('logout')}" style="color:#9aeed8; text-decoration:none;">Salir</a>
+    </div>
+  </div>
+
+  {admin_panel}
+
+  <div class="controls">
+    <div class="pill">
+      <span>🔎</span>
+      <input id="q" type="text" placeholder="Ej: paracetamol 500 mg">
+      <select id="scope">
+        <option>PRODUCTO</option>
+        <option>PRINCIPIO ACTIVO</option>
+        <option>AMBOS</option>
+      </select>
+      <button id="btnSearch">Buscar</button>
+    </div>
+    <div class="pill">
+      <label for="per" style="color:#c7d6ea; font-size:13px;">Filas/pág</label>
+      <select id="per">
+        <option>10</option><option selected>25</option><option>50</option><option>100</option>
+      </select>
+    </div>
+    <div class="pill">
+      <button id="btnCsv">Exportar CSV</button>
+      <button id="btnXlsx">Exportar XLSX</button>
+    </div>
+  </div>
+
+  <main class="grid">
+    <div class="meta">
+      <div class="kpi" id="kpiCount">0 resultado(s)</div>
+      <div class="kpi" id="kpiMin">MENOR: —</div>
+      <button id="btnOpenMin" style="display:none;">Abrir (MENOR)</button>
+      <div class="kpi" id="kpiMax">MAYOR: —</div>
+      <button id="btnOpenMax" style="display:none;">Abrir (MAYOR)</button>
+      <div class="muted" id="lastMods" style="margin-left:auto;">Última modificación: {digemid_last}</div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button id="btnPrev">◀ Ant</button>
+        <div class="kpi" id="kpiPage">Pág 0/0</div>
+        <button id="btnNext">Sig ▶</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table id="tbl">
+        <thead>
+          <tr>
+            <th data-col="Producto (Marca comercial)">Producto</th>
+            <th data-col="Principio Activo">P. Activo</th>
+            <th data-col="Presentación">Presentación</th>
+            <th data-col="Precio">Precio</th>
+            <th data-col="Laboratorio / Fabricante">Laboratorio</th>
+            <th data-col="Farmacia / Fuente">Farmacia / Fuente</th>
+            <th data-col="Enlace">Enlace</th>
+            <th data-col="GRUPO">Grupo</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </main>
+
+  <footer>Búsqueda DIGEMID · A&V · Copyright ©Relexner v {APP_VERSION}</footer>
+
+<script>
+// Estado
+let state = {{
+  rows: [],
+  page: 1,
+  per: 25,
+  total: 0,
+  pages: 0,
+  sort: {{col: "Precio", asc: true}},
+  min_item: null,
+  max_item: null
+}};
+
+// Elementos
+const qInput = document.getElementById("q");
+const scopeSelect = document.getElementById("scope");
+const perSelect = document.getElementById("per");
+const btnSearch = document.getElementById("btnSearch");
+const btnPrev = document.getElementById("btnPrev");
+const btnNext = document.getElementById("btnNext");
+const btnCsv = document.getElementById("btnCsv");
+const btnXlsx = document.getElementById("btnXlsx");
+const btnOpenMin = document.getElementById("btnOpenMin");
+const btnOpenMax = document.getElementById("btnOpenMax");
+const tbody = document.querySelector("#tbl tbody");
+const kpiCount = document.getElementById("kpiCount");
+const kpiPage = document.getElementById("kpiPage");
+const kpiMin = document.getElementById("kpiMin");
+const kpiMax = document.getElementById("kpiMax");
+
+// Búsqueda
+async function search() {{
+  const q = qInput.value.trim();
+  if (!q) {{
+    state.rows = [];
+    state.total = 0;
+    state.pages = 0;
+    loadPage();
+    return;
+  }}
+  
+  const scope = scopeSelect.value;
+  try {{
+    const res = await fetch(`/api/digemid/search?q=${{encodeURIComponent(q)}}&scope=${{scope}}`);
+    const data = await res.json();
+    state.rows = data.rows || [];
+    state.total = state.rows.length;
+    state.pages = Math.ceil(state.total / state.per);
+    state.page = 1;
+    loadPage();
+  }} catch (e) {{
+    console.error("Error searching:", e);
+    alert("Error en la búsqueda");
+  }}
+}}
+
+// Cargar página
+async function loadPage() {{
+  try {{
+    const res = await fetch(`/api/digemid/view?page=${{state.page}}&per=${{state.per}}&sort_col=${{state.sort.col}}&sort_asc=${{state.sort.asc}}`);
+    const data = await res.json();
+    state.rows = data.rows || [];
+    state.total = data.total || 0;
+    state.pages = data.pages || 0;
+    state.page = data.page || 1;
+    state.sort = data.sort || {{col: "Precio", asc: true}};
+    state.min_item = data.min_item;
+    state.max_item = data.max_item;
+    
+    // Renderizar tabla
+    tbody.innerHTML = "";
+    state.rows.forEach(row => {{
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${{row["Producto (Marca comercial)"] || ""}}</td>
+        <td>${{row["Principio Activo"] || ""}}</td>
+        <td>${{row["Presentación"] || ""}}</td>
+        <td class="price">${{row["Precio"] || ""}}</td>
+        <td>${{row["Laboratorio / Fabricante"] || ""}}</td>
+        <td>${{row["Farmacia / Fuente"] || ""}}</td>
+        <td class="rowlink">${{row["Enlace"] ? `<a href="${{row["Enlace"]}}" target="_blank">🔗</a>` : ""}}</td>
+        <td>${{row["GRUPO"] || ""}}</td>
+      `;
+      tbody.appendChild(tr);
+    }});
+    
+    // Actualizar KPIs
+    kpiCount.textContent = `${{state.total}} resultado(s)`;
+    kpiPage.textContent = `Pág ${{state.page}}/${{state.pages}}`;
+    
+    if (state.min_item) {{
+      kpiMin.textContent = `MENOR: ${{state.min_item["Precio"] || ""}}`;
+      btnOpenMin.style.display = state.min_item["Enlace"] ? "inline-block" : "none";
+      btnOpenMin.onclick = () => window.open(state.min_item["Enlace"], "_blank");
+    }} else {{
+      kpiMin.textContent = "MENOR: —";
+      btnOpenMin.style.display = "none";
+    }}
+    
+    if (state.max_item) {{
+      kpiMax.textContent = `MAYOR: ${{state.max_item["Precio"] || ""}}`;
+      btnOpenMax.style.display = state.max_item["Enlace"] ? "inline-block" : "none";
+      btnOpenMax.onclick = () => window.open(state.max_item["Enlace"], "_blank");
+    }} else {{
+      kpiMax.textContent = "MAYOR: —";
+      btnOpenMax.style.display = "none";
+    }}
+    
+    // Botones paginación
+    btnPrev.disabled = state.page <= 1;
+    btnNext.disabled = state.page >= state.pages;
+  }} catch (e) {{
+    console.error("Error loading page:", e);
+  }}
+}}
+
+// Eventos
+btnSearch.addEventListener("click", search);
+qInput.addEventListener("keypress", e => {{ if (e.key === "Enter") search(); }});
+btnPrev.addEventListener("click", () => {{ state.page--; loadPage(); }});
+btnNext.addEventListener("click", () => {{ state.page++; loadPage(); }});
+perSelect.addEventListener("change", () => {{ state.per = parseInt(perSelect.value); state.page = 1; loadPage(); }});
+
+// Ordenar columnas
+document.querySelectorAll("#tbl th").forEach(th => {{
+  th.addEventListener("click", () => {{
+    const col = th.dataset.col;
+    if (state.sort.col === col) {{
+      state.sort.asc = !state.sort.asc;
+    }} else {{
+      state.sort.col = col;
+      state.sort.asc = true;
+    }}
+    loadPage();
+  }});
+}});
+
+// Exportar
+btnCsv.addEventListener("click", () => {{
+  const url = `/api/digemid/export?fmt=csv&sort_col=${{state.sort.col}}&sort_asc=${{state.sort.asc}}`;
+  window.open(url, "_blank");
+}});
+
+btnXlsx.addEventListener("click", () => {{
+  const url = `/api/digemid/export?fmt=xlsx&sort_col=${{state.sort.col}}&sort_asc=${{state.sort.asc}}`;
+  window.open(url, "_blank");
+}});
+
+// Subir archivo DIGEMID (admin)
+const formDigemid = document.getElementById("formDigemid");
+if (formDigemid) {{
+  formDigemid.addEventListener("submit", async (e) => {{
+    e.preventDefault();
+    const formData = new FormData(formDigemid);
+    try {{
+      const res = await fetch("/api/admin/upload_digemid", {{
+        method: "POST",
+        body: formData
+      }});
+      const data = await res.json();
+      if (data.ok) {{
+        alert(data.message || "Archivo agregado correctamente");
+        formDigemid.reset();
+      }} else {{
+        alert("Error: " + (data.error || "Error desconocido"));
+      }}
+    }} catch (e) {{
+      console.error("Error uploading:", e);
+      alert("Error al subir archivo");
+    }}
+  }});
+}}
+
+// Cargar página inicial
+loadPage();
+</script>
 </body>
 </html>"""
 
