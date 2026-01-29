@@ -67,7 +67,7 @@ function renderPharmacySelectors() {
     const checkboxDiv = document.createElement("div");
     checkboxDiv.className = "pharmacy-checkbox";
     checkboxDiv.innerHTML = `
-      <input type="checkbox" id="pharm_${pharmacy.name}" value="${pharmacy.name}" checked>
+      <input type="checkbox" id="pharm_${pharmacy.name}" value="${pharmacy.name}">
       <label for="pharm_${pharmacy.name}">${pharmacy.name}</label>
     `;
     checkboxDiv.querySelector("input").addEventListener("change", updateSelectedPharmacies);
@@ -308,6 +308,10 @@ per.onchange = () => { state.per = parseInt(per.value,10)||25; state.page=1; loa
 
 // Load pharmacies on page load
 loadAvailablePharmacies();
+// Asegurar modo WEB por defecto aunque el navegador haya guardado el valor anterior
+if (mode) {
+  mode.value = "web";
+}
 
 // Admin forms
 const formBase  = document.querySelector("#formBase");

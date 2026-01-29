@@ -26,7 +26,7 @@
 from flask import (
     Flask, request, session, redirect, url_for, jsonify, send_file, make_response
 )
-import os, sys, io, re, json, shutil, datetime, math
+import os, sys, io, re, json, shutil, datetime, math, random
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
@@ -241,12 +241,30 @@ def load_file(path):
 def load_digemid_file(path):
     """Cargar archivo DIGEMID desde la línea 8 (header=7)"""
     try:
+        def has_raw_headers(cols):
+            cols_l = {str(c).strip().lower() for c in cols}
+            return any(k in cols_l for k in ("nombre de producto", "precio unit.", "farmacia/botica"))
+
         if str(path).lower().endswith(".csv"):
-            # Para CSV, leer desde la línea 8 (skiprows=7)
-            return pd.read_csv(path, skiprows=7)
+            # Para CSV, intentar desde la línea 8 (skiprows=7)
+            try:
+                df = pd.read_csv(path, skiprows=7)
+                if not df.empty and len(df.columns) > 2 and has_raw_headers(df.columns):
+                    return df
+            except Exception:
+                pass
+            # Fallback: CSV normal
+            return pd.read_csv(path)
         else:
-            # Para Excel, leer desde header=7 (línea 8)
-            return pd.read_excel(path, header=7)
+            # Para Excel, intentar desde header=7 (línea 8)
+            try:
+                df = pd.read_excel(path, header=7)
+                if not df.empty and len(df.columns) > 2 and has_raw_headers(df.columns):
+                    return df
+            except Exception:
+                pass
+            # Fallback: Excel normal
+            return pd.read_excel(path)
     except Exception as e:
         print(f"Error loading DIGEMID file: {e}")
         return pd.DataFrame()
@@ -316,6 +334,11 @@ def normalize_from_main(raw: pd.DataFrame) -> pd.DataFrame:
 def normalize_from_digemid(raw: pd.DataFrame) -> pd.DataFrame:
     """Normalizar DataFrame de DIGEMID mapeando columnas específicas"""
     df = raw.copy()
+    # Asegurar DataFrame aunque venga como Series o dict
+    if isinstance(df, dict):
+        df = pd.DataFrame([df])
+    elif isinstance(df, pd.Series):
+        df = df.to_frame().T
     lower = {str(c).strip().lower(): c for c in df.columns}
     
     def pick(*cands):
@@ -344,16 +367,18 @@ def normalize_from_digemid(raw: pd.DataFrame) -> pd.DataFrame:
     tipo = pick("tipo")
     
     # Crear DataFrame normalizado
+    # Crear columnas con Series del mismo largo para evitar error de escalares
+    empty_series = pd.Series([""] * len(df))
     out = pd.DataFrame({
-        "CÓDIGO PRODUCTO":           df[nombre_prod] if nombre_prod in df.columns else "",  # Usar nombre como código si no hay otro
-        "Producto (Marca comercial)": df[nombre_prod] if nombre_prod in df.columns else "",
-        "Principio Activo":          "",  # DIGEMID no tiene este campo típicamente
-        "N° DIGEMID":                df[nombre_prod] if nombre_prod in df.columns else "",  # Placeholder
-        "Laboratorio / Fabricante":  df[fabricante] if fabricante in df.columns else "",
-        "Presentación":              "",  # DIGEMID no tiene presentación específica
-        "Precio":                    df[precio_unit] if precio_unit in df.columns else "",
-        "Farmacia / Fuente":         df[farmacia_botica] if farmacia_botica in df.columns else "",
-        "Enlace":                    "",  # No hay enlace en DIGEMID
+        "CÓDIGO PRODUCTO":           df[nombre_prod] if nombre_prod in df.columns else empty_series,  # Usar nombre como código si no hay otro
+        "Producto (Marca comercial)": df[nombre_prod] if nombre_prod in df.columns else empty_series,
+        "Principio Activo":          empty_series,  # DIGEMID no tiene este campo típicamente
+        "N° DIGEMID":                df[nombre_prod] if nombre_prod in df.columns else empty_series,  # Placeholder
+        "Laboratorio / Fabricante":  df[fabricante] if fabricante in df.columns else empty_series,
+        "Presentación":              empty_series,  # DIGEMID no tiene presentación específica
+        "Precio":                    df[precio_unit] if precio_unit in df.columns else empty_series,
+        "Farmacia / Fuente":         df[farmacia_botica] if farmacia_botica in df.columns else empty_series,
+        "Enlace":                    empty_series,  # No hay enlace en DIGEMID
     })
     
     # Añadir columnas extra con información adicional
@@ -442,7 +467,10 @@ def load_normalized_digemid(path) -> pd.DataFrame:
     raw = load_digemid_file(path)
     if raw.empty:
         return pd.DataFrame(columns=BASE_COLUMNS_STD + EXTRA_COLUMNS)
-    df = normalize_from_digemid(raw)
+    # Si el archivo ya está normalizado (base estándar), reutilizarlo
+    lower = {str(c).strip().lower(): c for c in raw.columns}
+    is_standard = ("producto (marca comercial)" in lower) or ("farmacia / fuente" in lower)
+    df = normalize_from_main(raw) if is_standard else normalize_from_digemid(raw)
     df_up = df_to_upper(df)
     if "Enlace" in df.columns:
         df_up["Enlace"] = df["Enlace"].astype(str).replace("nan", "")
@@ -516,6 +544,37 @@ def combo_digemid_df():
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/142.0.7444.60 Safari/537.36")
 HDRS = {"User-Agent": UA, "Accept-Language":"es-PE,es;q=0.9,en;q=0.8"}
+
+# Pool de User-Agents para reintentos (reduce bloqueos por datacenter)
+UA_POOL = [
+    UA,
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.7330.96 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.7289.146 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.7289.146 Safari/537.36",
+]
+
+def fetch_url_with_retry(url: str, timeout: int = 8, max_tries: int = 3):
+    """GET con reintentos simples y rotación de User-Agent"""
+    last_exc = None
+    for attempt in range(1, max_tries + 1):
+        try:
+            headers = dict(HDRS)
+            headers["User-Agent"] = random.choice(UA_POOL)
+            r = requests.get(url, headers=headers, timeout=timeout)
+            # Reintentar si el sitio bloquea por IP/datacenter
+            if r.status_code in (403, 429, 503) and attempt < max_tries:
+                import time as _t
+                _t.sleep(1.2 * attempt)
+                continue
+            return r
+        except requests.exceptions.Timeout as te:
+            last_exc = te
+        except requests.exceptions.ConnectionError as ce:
+            last_exc = ce
+        except Exception as e:
+            last_exc = e
+    raise last_exc if last_exc else Exception("Request failed")
 
 # Improved price regex patterns for Peruvian pharmacies
 RE_PRICE_PATTERNS = [
@@ -711,7 +770,7 @@ PERUVIAN_PHARMACIES = [
     {
         "name": "Farmacenter",
         "base_url": "https://farmacenter.com.pe",
-        "search_url": "https://farmacenter.com.pe/?s={query}&post_type=product",
+        "search_url": "https://farmacenter.com.pe/?s={query}",
         "price_selectors": [
             # Selectores específicos para WooCommerce
             ".woocommerce-Price-amount", "span.woocommerce-Price-amount",
@@ -1635,218 +1694,227 @@ def search_pharmacy_direct(query: str, pharmacy_info: dict, timeout=8) -> list:
         # Guardar query en pharmacy_info para uso en extracción
         pharmacy_info["_current_query"] = query
         
+        r = None
+        request_failed = False
         try:
-            r = requests.get(search_url, headers=HDRS, timeout=timeout)
-        except requests.exceptions.Timeout:
-            print(f"    [ERROR] {pharmacy_info['name']}: Timeout")
-            return results
-        except requests.exceptions.ConnectionError as ce:
-            print(f"    [ERROR] {pharmacy_info['name']}: Connection error - {ce}")
-            return results
+            r = fetch_url_with_retry(search_url, timeout=timeout, max_tries=3)
         except Exception as req_error:
+            request_failed = True
             print(f"    [ERROR] {pharmacy_info['name']}: Request error - {req_error}")
-            return results
         
-        if r.status_code == 200:
-            # Sitios con JS: intentar renderizar con Selenium si está configurado
-            use_selenium = pharmacy_info.get("use_selenium", False) or pharmacy_info.get("use_text_extraction", False)
-            if use_selenium:
+        status_code = r.status_code if r is not None else 0
+        r_text = r.text if r is not None else ""
+        
+        # Sitios con JS o bloqueos (403/429/503): intentar renderizar con Selenium si está configurado
+        blocked_status = status_code in (403, 429, 503)
+        use_selenium = (
+            pharmacy_info.get("use_selenium", False)
+            or pharmacy_info.get("use_text_extraction", False)
+            or blocked_status
+        )
+        if use_selenium:
+            rendered_html = ""
+            rendered_text = ""
+            try:
+                from selenium import webdriver
+                from selenium.webdriver.chrome.options import Options
+                from selenium.webdriver.common.by import By
+                from selenium.webdriver.support.ui import WebDriverWait
+                from selenium.webdriver.support import expected_conditions as EC
+                # Driver manager para asegurar ChromeDriver disponible
+                try:
+                    from selenium.webdriver.chrome.service import Service
+                    from webdriver_manager.chrome import ChromeDriverManager
+                    _service = Service(ChromeDriverManager().install())
+                except Exception:
+                    _service = None
+
+                chrome_options = Options()
+                chrome_options.add_argument("--headless=new")
+                chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+                chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument("--window-size=1366,768")
+                chrome_options.add_argument(f"--user-agent={random.choice(UA_POOL)}")
+                chrome_options.add_argument("--lang=es-PE")
+                chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+                chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"]) 
+                chrome_options.add_experimental_option('useAutomationExtension', False)
+
+                driver = None
+                try:
+                    driver = webdriver.Chrome(service=_service, options=chrome_options) if _service else webdriver.Chrome(options=chrome_options)
+                    driver.get(search_url)
+                    # Esperar contenido dinámico razonable
+                    try:
+                        WebDriverWait(driver, 12).until(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "a, div, span"))
+                        )
+                    except Exception:
+                        pass
+                    # Intentar cerrar banners de consentimiento/cookies
+                    try:
+                        for sel in [
+                            "#consent-banner button",
+                            "#onetrust-accept-btn-handler",
+                            "button[aria-label='Aceptar']",
+                            "button[aria-label='ACEPTAR']",
+                            "button.cookie-accept",
+                            "button:contains('Aceptar')"
+                        ]:
+                            btns = driver.find_elements(By.CSS_SELECTOR, sel) if ":contains(" not in sel else []
+                            if btns:
+                                try:
+                                    btns[0].click()
+                                    break
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    # Desplazar para activar carga de listados y esperar a que aparezcan precios/texto
+                    import time as _t
+                    for _ in range(6):
+                        driver.execute_script("window.scrollBy(0, document.body.scrollHeight/2);")
+                        _t.sleep(1.0)
+                    # Intentar presionar "ver más" / "cargar más"
+                    try:
+                        for btn_sel in [
+                            "button[aria-label*='ver más']",
+                            "button[aria-label*='Ver más']",
+                            "button:contains('ver más')",
+                            "button:contains('Ver más')",
+                            "button.load-more", "button.more", "button[ng-click*='more']"
+                        ]:
+                            btns = driver.find_elements(By.CSS_SELECTOR, btn_sel) if ":contains(" not in btn_sel else []
+                            if btns:
+                                try:
+                                    btns[0].click(); _t.sleep(1.0)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+                    # Espera adicional a que aparezca patrón de precio en el HTML
+                    tries = 0
+                    while tries < 5:
+                        html_tmp = driver.page_source or ""
+                        if ("S/" in html_tmp) or (query.lower() in html_tmp.lower()):
+                            break
+                        _t.sleep(1.0)
+                        tries += 1
+                    rendered_html = driver.page_source or ""
+                    # Extraer texto renderizado del body (mejor para buscar por regex)
+                    def _capture_body_text():
+                        try:
+                            return driver.execute_script("return document.body.innerText || ''") or ""
+                        except Exception:
+                            return ""
+                    rendered_text = _capture_body_text()
+                    if len(rendered_text) < 500:
+                        # Dar un tiempo extra para que aparezcan precios cargados por JS
+                        _t.sleep(2.0)
+                        rendered_text = _capture_body_text()
+                    if len(rendered_text) < 500:
+                        try:
+                            driver.execute_script("window.scrollTo(0, 0);")
+                            _t.sleep(1.0)
+                        except Exception:
+                            pass
+                        rendered_text = _capture_body_text()
+                finally:
+                    if driver:
+                        try:
+                            driver.quit()
+                        except Exception as qe:
+                            print(f"    [WARN] Error closing driver: {qe}")
+                            try:
+                                driver.close()
+                            except:
+                                pass
+            except Exception as se:
+                print(f"    [WARN] Selenium no disponible/funcionó: {se}")
                 rendered_html = ""
                 rendered_text = ""
-                try:
-                    from selenium import webdriver
-                    from selenium.webdriver.chrome.options import Options
-                    from selenium.webdriver.common.by import By
-                    from selenium.webdriver.support.ui import WebDriverWait
-                    from selenium.webdriver.support import expected_conditions as EC
-                    # Driver manager para asegurar ChromeDriver disponible
-                    try:
-                        from selenium.webdriver.chrome.service import Service
-                        from webdriver_manager.chrome import ChromeDriverManager
-                        _service = Service(ChromeDriverManager().install())
-                    except Exception:
-                        _service = None
 
-                    chrome_options = Options()
-                    chrome_options.add_argument("--headless=new")
-                    chrome_options.add_argument("--no-sandbox")
-                    chrome_options.add_argument("--disable-dev-shm-usage")
-                    chrome_options.add_argument("--disable-gpu")
-                    chrome_options.add_argument("--window-size=1366,768")
-                    chrome_options.add_argument(f"--user-agent={UA}")
-                    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-                    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"]) 
-                    chrome_options.add_experimental_option('useAutomationExtension', False)
+            if not rendered_html and status_code not in (0, 200):
+                print(f"    [ERROR] {pharmacy_info['name']}: HTTP {status_code} (sin HTML renderizado)")
+                return results
 
-                    driver = None
-                    try:
-                        driver = webdriver.Chrome(service=_service, options=chrome_options) if _service else webdriver.Chrome(options=chrome_options)
-                        driver.get(search_url)
-                        # Esperar contenido dinámico razonable
-                        try:
-                            WebDriverWait(driver, 12).until(
-                                EC.presence_of_element_located((By.CSS_SELECTOR, "a, div, span"))
-                            )
-                        except Exception:
-                            pass
-                        # Intentar cerrar banners de consentimiento/cookies
-                        try:
-                            for sel in [
-                                "#consent-banner button",
-                                "#onetrust-accept-btn-handler",
-                                "button[aria-label='Aceptar']",
-                                "button[aria-label='ACEPTAR']",
-                                "button.cookie-accept",
-                                "button:contains('Aceptar')"
-                            ]:
-                                btns = driver.find_elements(By.CSS_SELECTOR, sel) if ":contains(" not in sel else []
-                                if btns:
-                                    try:
-                                        btns[0].click()
-                                        break
-                                    except Exception:
-                                        pass
-                        except Exception:
-                            pass
-                        # Desplazar para activar carga de listados y esperar a que aparezcan precios/texto
-                        import time as _t
-                        for _ in range(6):
-                            driver.execute_script("window.scrollBy(0, document.body.scrollHeight/2);")
-                            _t.sleep(1.0)
-                        # Intentar presionar "ver más" / "cargar más"
-                        try:
-                            for btn_sel in [
-                                "button[aria-label*='ver más']",
-                                "button[aria-label*='Ver más']",
-                                "button:contains('ver más')",
-                                "button:contains('Ver más')",
-                                "button.load-more", "button.more", "button[ng-click*='more']"
-                            ]:
-                                btns = driver.find_elements(By.CSS_SELECTOR, btn_sel) if ":contains(" not in btn_sel else []
-                                if btns:
-                                    try:
-                                        btns[0].click(); _t.sleep(1.0)
-                                    except Exception:
-                                        pass
-                        except Exception:
-                            pass
-                        # Espera adicional a que aparezca patrón de precio en el HTML
-                        tries = 0
-                        while tries < 5:
-                            html_tmp = driver.page_source or ""
-                            if ("S/" in html_tmp) or (query.lower() in html_tmp.lower()):
-                                break
-                            _t.sleep(1.0)
-                            tries += 1
-                        rendered_html = driver.page_source or ""
-                        # Extraer texto renderizado del body (mejor para buscar por regex)
-                        def _capture_body_text():
-                            try:
-                                return driver.execute_script("return document.body.innerText || ''") or ""
-                            except Exception:
-                                return ""
-                        rendered_text = _capture_body_text()
-                        if len(rendered_text) < 500:
-                            # Dar un tiempo extra para que aparezcan precios cargados por JS
-                            _t.sleep(2.0)
-                            rendered_text = _capture_body_text()
-                        if len(rendered_text) < 500:
-                            try:
-                                driver.execute_script("window.scrollTo(0, 0);")
-                                _t.sleep(1.0)
-                            except Exception:
-                                pass
-                            rendered_text = _capture_body_text()
-                    finally:
-                        if driver:
-                            try:
-                                driver.quit()
-                            except Exception as qe:
-                                print(f"    [WARN] Error closing driver: {qe}")
-                                try:
-                                    driver.close()
-                                except:
-                                    pass
-                except Exception as se:
-                    print(f"    [WARN] Selenium no disponible/funcionó: {se}")
-                    rendered_html = ""
-                    rendered_text = ""
-
-                used_js = bool(rendered_html) and (len(rendered_html) >= len(r.text))
-                html_to_use = rendered_html if used_js else r.text
-                products = extract_multiple_products(html_to_use, search_url, pharmacy_info)
-                # Si con selectores no se obtuvo nada o muy pocos productos, usar el texto plano renderizado
-                if (not products or len(products) < 3) and (rendered_text and len(rendered_text) > 200):
-                    print(f"    [TEXT] Only {len(products)} products via selectors. Trying rendered text extraction…")
-                    pharmacy_info["_current_query"] = query
-                    text_products = extract_products_from_text(rendered_text, search_url, pharmacy_info, query=query)
-                    # Combinar productos, evitando duplicados
-                    if text_products:
-                        seen_keys = {(p.get("name", "").upper()[:50], p.get("price")) for p in products}
-                        for tp in text_products:
-                            tp_key = (tp.get("name", "").upper()[:50], tp.get("price"))
-                            if tp_key not in seen_keys:
-                                products.append(tp)
-                                seen_keys.add(tp_key)
-            else:
-                # Sitios sin JS: extracción normal
-                used_js = False
+            used_js = bool(rendered_html) and (len(rendered_html) >= len(r_text))
+            html_to_use = rendered_html if used_js or rendered_html else r_text
+            products = extract_multiple_products(html_to_use, search_url, pharmacy_info)
+            # Si con selectores no se obtuvo nada o muy pocos productos, usar el texto plano renderizado
+            if (not products or len(products) < 3) and (rendered_text and len(rendered_text) > 200):
+                print(f"    [TEXT] Only {len(products)} products via selectors. Trying rendered text extraction…")
                 pharmacy_info["_current_query"] = query
-                products = extract_multiple_products(r.text, search_url, pharmacy_info)
-                # Si no se encontraron productos o hay muy pocos, intentar extracción de texto
-                # (ahora más agresivo: siempre intentar si hay menos de 3 productos)
-                if len(products) < 3:
-                    print(f"    [TEXT] Only {len(products)} products found with selectors, trying text extraction as fallback...")
-                    try:
-                        from bs4 import BeautifulSoup
-                        soup_fallback = BeautifulSoup(r.text, "lxml")
-                        text_fallback = soup_fallback.get_text()
-                    except Exception:
-                        text_fallback = r.text
-                    text_products = extract_products_from_text(text_fallback, search_url, pharmacy_info, query=query)
-                    # Combinar productos, evitando duplicados
-                    if text_products:
-                        seen_keys = {(p.get("name", "").upper()[:50], p.get("price")) for p in products}
-                        for tp in text_products:
-                            tp_key = (tp.get("name", "").upper()[:50], tp.get("price"))
-                            if tp_key not in seen_keys:
-                                products.append(tp)
-                                seen_keys.add(tp_key)
-            # Procesar productos encontrados (tanto con JS como sin JS)
-            print(f"    [DEBUG] {pharmacy_info['name']}: Found {len(products)} products before processing")
-            for idx, product in enumerate(products):
-                try:
-                    # Debug: imprimir información del producto
-                    product_price = product.get("price") if product and isinstance(product, dict) else None
-                    product_name = product.get("name") if product and isinstance(product, dict) else None
-                    print(f"    [DEBUG] {pharmacy_info['name']}: Product {idx+1}/{len(products)} - name: '{product_name}', price: '{product_price}', type: {type(product_price)}")
-                    
-                    if product and isinstance(product, dict) and product.get("price"):
-                        # Verificar que el precio no esté vacío
-                        price_str = str(product["price"]).strip()
-                        if price_str and price_str != "" and price_str.lower() != "nan":
-                            results.append({
-                                "Producto (Marca comercial)": product.get("name", query.upper()),
-                                "Precio": product["price"],
-                                "Farmacia / Fuente": pharmacy_info["name"],
-                                "Enlace": product.get("url", search_url),
-                                "_ORIGEN": ("WEB_JS" if (use_selenium and used_js) else "WEB")
-                            })
-                            print(f"    [OK] {pharmacy_info['name']}: Added product '{product.get('name', query.upper())[:50]}' with price '{product['price']}'")
-                        else:
-                            print(f"    [WARN] {pharmacy_info['name']}: Product {idx+1} skipped - price is empty/invalid: '{price_str}'")
-                    else:
-                        print(f"    [WARN] {pharmacy_info['name']}: Product {idx+1} skipped - invalid product structure or missing price")
-                        if product:
-                            print(f"    [WARN] {pharmacy_info['name']}: Product keys: {list(product.keys()) if isinstance(product, dict) else 'not a dict'}")
-                except Exception as pe:
-                    print(f"    [WARN] {pharmacy_info['name']}: Error processing product {idx+1}: {pe}")
-                    import traceback
-                    print(traceback.format_exc())
-                    continue
-            print(f"    [DEBUG] {pharmacy_info['name']}: Total results after processing: {len(results)}")
+                text_products = extract_products_from_text(rendered_text, search_url, pharmacy_info, query=query)
+                # Combinar productos, evitando duplicados
+                if text_products:
+                    seen_keys = {(p.get("name", "").upper()[:50], p.get("price")) for p in products}
+                    for tp in text_products:
+                        tp_key = (tp.get("name", "").upper()[:50], tp.get("price"))
+                        if tp_key not in seen_keys:
+                            products.append(tp)
+                            seen_keys.add(tp_key)
         else:
-            print(f"    [ERROR] {pharmacy_info['name']}: HTTP {r.status_code}")
+            if request_failed or status_code != 200:
+                print(f"    [ERROR] {pharmacy_info['name']}: HTTP {status_code} (request_failed={request_failed})")
+                return results
+            # Sitios sin JS: extracción normal
+            used_js = False
+            pharmacy_info["_current_query"] = query
+            products = extract_multiple_products(r_text, search_url, pharmacy_info)
+            # Si no se encontraron productos o hay muy pocos, intentar extracción de texto
+            # (ahora más agresivo: siempre intentar si hay menos de 3 productos)
+            if len(products) < 3:
+                print(f"    [TEXT] Only {len(products)} products found with selectors, trying text extraction as fallback...")
+                try:
+                    from bs4 import BeautifulSoup
+                    soup_fallback = BeautifulSoup(r_text, "lxml")
+                    text_fallback = soup_fallback.get_text()
+                except Exception:
+                    text_fallback = r_text
+                text_products = extract_products_from_text(text_fallback, search_url, pharmacy_info, query=query)
+                # Combinar productos, evitando duplicados
+                if text_products:
+                    seen_keys = {(p.get("name", "").upper()[:50], p.get("price")) for p in products}
+                    for tp in text_products:
+                        tp_key = (tp.get("name", "").upper()[:50], tp.get("price"))
+                        if tp_key not in seen_keys:
+                            products.append(tp)
+                            seen_keys.add(tp_key)
+        # Procesar productos encontrados (tanto con JS como sin JS)
+        print(f"    [DEBUG] {pharmacy_info['name']}: Found {len(products)} products before processing")
+        for idx, product in enumerate(products):
+            try:
+                # Debug: imprimir información del producto
+                product_price = product.get("price") if product and isinstance(product, dict) else None
+                product_name = product.get("name") if product and isinstance(product, dict) else None
+                print(f"    [DEBUG] {pharmacy_info['name']}: Product {idx+1}/{len(products)} - name: '{product_name}', price: '{product_price}', type: {type(product_price)}")
+                
+                if product and isinstance(product, dict) and product.get("price"):
+                    # Verificar que el precio no esté vacío
+                    price_str = str(product["price"]).strip()
+                    if price_str and price_str != "" and price_str.lower() != "nan":
+                        results.append({
+                            "Producto (Marca comercial)": product.get("name", query.upper()),
+                            "Precio": product["price"],
+                            "Farmacia / Fuente": pharmacy_info["name"],
+                            "Enlace": product.get("url", search_url),
+                            "_ORIGEN": ("WEB_JS" if (use_selenium and used_js) else "WEB")
+                        })
+                        print(f"    [OK] {pharmacy_info['name']}: Added product '{product.get('name', query.upper())[:50]}' with price '{product['price']}'")
+                    else:
+                        print(f"    [WARN] {pharmacy_info['name']}: Product {idx+1} skipped - price is empty/invalid: '{price_str}'")
+                else:
+                    print(f"    [WARN] {pharmacy_info['name']}: Product {idx+1} skipped - invalid product structure or missing price")
+                    if product:
+                        print(f"    [WARN] {pharmacy_info['name']}: Product keys: {list(product.keys()) if isinstance(product, dict) else 'not a dict'}")
+            except Exception as pe:
+                print(f"    [WARN] {pharmacy_info['name']}: Error processing product {idx+1}: {pe}")
+                import traceback
+                print(traceback.format_exc())
+                continue
+        print(f"    [DEBUG] {pharmacy_info['name']}: Total results after processing: {len(results)}")
     except Exception as e:
         print(f"    [ERROR] {pharmacy_info['name']}: {e}")
     
@@ -2413,6 +2481,39 @@ def api_digemid_view():
         "max_item": rmax
     })
 
+@app.route("/api/digemid/suggest")
+def api_digemid_suggest():
+    """Sugerencias rápidas por nombre de producto (DIGEMID)"""
+    if "user" not in session:
+        return jsonify({"error":"unauth"}), 401
+
+    q = (request.args.get("q") or "").strip()
+    if len(q) < 2:
+        return jsonify({"suggestions":[]})
+
+    suggestions = []
+    try:
+        df = combo_digemid_df()
+        if df.empty or "Producto (Marca comercial)" not in df.columns:
+            return jsonify({"suggestions":[]})
+
+        qU = q.upper()
+        names = df["Producto (Marca comercial)"].astype(str)
+        mask = names.str.contains(qU, regex=False, na=False)
+        seen = set()
+        for name in names[mask].tolist():
+            n = str(name).strip()
+            if not n or n in seen:
+                continue
+            seen.add(n)
+            suggestions.append(n)
+            if len(suggestions) >= 10:
+                break
+    except Exception as e:
+        print(f"Error in DIGEMID suggest: {e}")
+
+    return jsonify({"suggestions": suggestions})
+
 @app.route("/api/digemid/export")
 def api_digemid_export():
     """Exportar resultados DIGEMID"""
@@ -2957,6 +3058,32 @@ input[type=text] {{
 }}
 .controls {{ display:flex; flex-wrap:wrap; gap:8px; padding:10px 16px; align-items:center; border-bottom:1px solid var(--line); }}
 .controls .pill {{ background:var(--chip); border:1px solid var(--line); padding:8px 10px; border-radius:12px; display:flex; gap:8px; align-items:center; }}
+.suggest-wrap {{ position: relative; }}
+.suggestions {{
+  position: absolute; top: 110%; left: 0; right: 0;
+  background: #0b1726; border: 1px solid var(--line);
+  border-radius: 8px; z-index: 50; max-height: 220px; overflow-y: auto;
+  display: none;
+}}
+.suggestions .item {{
+  padding: 8px 10px; cursor: pointer; border-bottom: 1px solid #12243a;
+  font-size: 13px;
+}}
+.suggestions .item:last-child {{ border-bottom: none; }}
+.suggestions .item:hover {{ background: rgba(29,209,161,0.12); }}
+.suggest-wrap {{ position: relative; }}
+.suggestions {{
+  position: absolute; top: 110%; left: 0; right: 0;
+  background: #0b1726; border: 1px solid var(--line);
+  border-radius: 8px; z-index: 50; max-height: 220px; overflow-y: auto;
+  display: none;
+}}
+.suggestions .item {{
+  padding: 8px 10px; cursor: pointer; border-bottom: 1px solid #12243a;
+  font-size: 13px;
+}}
+.suggestions .item:last-child {{ border-bottom: none; }}
+.suggestions .item:hover {{ background: rgba(29,209,161,0.12); }}
 main {{ padding:12px 16px; }}
 .grid {{ display:grid; grid-template-columns: 1fr; gap:12px; }}
 .table-wrap {{ background:rgba(3,12,22,.55); border:1px solid var(--line); border-radius:14px; overflow:auto; }}
@@ -3050,8 +3177,8 @@ tr:hover {{ background: rgba(255,255,255,0.05); }}
       </select>
       <select id="mode">
         <option value="base">BASE</option>
-        <option value="web">WEB</option>
-        <option value="both" selected>AMBOS</option>
+        <option value="web" selected>WEB</option>
+        <option value="both">AMBOS</option>
       </select>
       <button id="btnSearch">Buscar</button>
     </div>
@@ -3206,7 +3333,10 @@ details.admin summary {{ cursor:pointer; font-weight:700; }}
   <div class="controls">
     <div class="pill">
       <span>🔎</span>
-      <input id="q" type="text" placeholder="Ej: paracetamol 500 mg">
+      <div class="suggest-wrap">
+        <input id="q" type="text" placeholder="Ej: paracetamol 500 mg" autocomplete="off">
+        <div id="suggestions" class="suggestions"></div>
+      </div>
       <select id="scope">
         <option>PRODUCTO</option>
         <option>PRINCIPIO ACTIVO</option>
@@ -3291,6 +3421,47 @@ const kpiCount = document.getElementById("kpiCount");
 const kpiPage = document.getElementById("kpiPage");
 const kpiMin = document.getElementById("kpiMin");
 const kpiMax = document.getElementById("kpiMax");
+const suggestionsBox = document.getElementById("suggestions");
+let suggestTimer = null;
+
+function hideSuggestions() {{
+  if (suggestionsBox) {{
+    suggestionsBox.style.display = "none";
+    suggestionsBox.innerHTML = "";
+  }}
+}}
+
+async function fetchSuggestions() {{
+  const q = qInput.value.trim();
+  if (!q || q.length < 2) {{
+    hideSuggestions();
+    return;
+  }}
+  try {{
+    const res = await fetch(`/api/digemid/suggest?q=${{encodeURIComponent(q)}}`);
+    const data = await res.json();
+    const items = data.suggestions || [];
+    if (!items.length) {{
+      hideSuggestions();
+      return;
+    }}
+    suggestionsBox.innerHTML = "";
+    items.forEach(text => {{
+      const div = document.createElement("div");
+      div.className = "item";
+      div.textContent = text;
+      div.addEventListener("click", () => {{
+        qInput.value = text;
+        hideSuggestions();
+        search();
+      }});
+      suggestionsBox.appendChild(div);
+    }});
+    suggestionsBox.style.display = "block";
+  }} catch (e) {{
+    hideSuggestions();
+  }}
+}}
 
 // Búsqueda
 async function search() {{
@@ -3380,7 +3551,16 @@ async function loadPage() {{
 
 // Eventos
 btnSearch.addEventListener("click", search);
-qInput.addEventListener("keypress", e => {{ if (e.key === "Enter") search(); }});
+qInput.addEventListener("keypress", e => {{ if (e.key === "Enter") {{ hideSuggestions(); search(); }} }});
+qInput.addEventListener("input", () => {{
+  if (suggestTimer) clearTimeout(suggestTimer);
+  suggestTimer = setTimeout(fetchSuggestions, 180);
+}});
+document.addEventListener("click", (e) => {{
+  if (suggestionsBox && !suggestionsBox.contains(e.target) && e.target !== qInput) {{
+    hideSuggestions();
+  }}
+}});
 btnPrev.addEventListener("click", () => {{ state.page--; loadPage(); }});
 btnNext.addEventListener("click", () => {{ state.page++; loadPage(); }});
 perSelect.addEventListener("change", () => {{ state.per = parseInt(perSelect.value); state.page = 1; loadPage(); }});
@@ -3444,9 +3624,10 @@ loadPage();
 # ---- Main
 if __name__ == "__main__":
     ensure_all_files()
-    # Para desarrollo local - desactivar reloader si causa problemas
-    use_reloader = os.environ.get("FLASK_RELOAD", "true").lower() == "true"
-    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), use_reloader=use_reloader)
+    # Para desarrollo local - desactivar reloader por defecto para evitar reinicios inesperados
+    use_reloader = os.environ.get("FLASK_RELOAD", "false").lower() == "true"
+    debug_mode = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
+    app.run(debug=debug_mode, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), use_reloader=use_reloader)
 else:
     # Para producción (cuando se ejecuta con gunicorn)
     ensure_all_files()
